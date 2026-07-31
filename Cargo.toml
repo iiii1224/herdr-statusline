@@ -1,0 +1,12 @@
+[package]
+name = "hsl-config"
+version = "0.1.0"
+edition = "2021"
+description = "Config, init and purge helper for the herdr-statusline plugin"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+toml = "0.8"

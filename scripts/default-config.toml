@@ -1,0 +1,41 @@
+enabled = true
+
+[statusline]
+status_interval = 1
+status_right = "%m/%d %H:%M:%S"
+
+# Every tmux `status-*` and `window-status-*` option is available here. Write
+# the option name with underscores; values reach tmux unchanged. See tmux(1)
+# "STATUS LINE" and "FORMATS".
+#
+# Uncomment these three to turn on the generated herdr-info.sh, which shows the
+# focused pane, its working directory and its git state. status_style belongs to
+# the set: tmux's own default status bar is green, which the green git segment
+# would disappear into.
+#
+#   status_style = "bg=#242424,fg=#dadada"
+#   status_left_length = 120
+#   status_left = "#($HERDR_PLUGIN_CONFIG_DIR/herdr-info.sh)"
+#
+# Other examples:
+#
+#   status_justify = "centre"
+#   status_right_length = 60
+#   status_right = "#[fg=colour255,bg=colour241] #h | LA: #(cut -d' ' -f-3 /proc/loadavg) | %m/%d %H:%M:%S#[default]"
+#   window_status_format = " #I: #W "
+#   window_status_current_format = "#[fg=colour255,bg=colour27,bold] #I: #W #[default]"
+#
+# Inside `#(...)`: the string goes to /bin/sh -c, so $VAR expands. The tmux
+# environment provides $HERDR_SESSION (empty for --no-session and --remote) and
+# $HERDR_PLUGIN_CONFIG_DIR. Pass tmux formats as arguments, e.g.
+# `#(myscript #{client_width})`.
+#
+# A failing `#(...)` shows whatever it printed to stdout; tmux discards its
+# stderr. Handle your own errors, e.g. `#(myscript || echo 'myscript failed')`.
+#
+# Notes:
+#   `#S` is the throwaway tmux session and is always `hsl`. For the herdr
+#   session name use $HERDR_SESSION inside `#(...)`.
+#   `status_left_length` defaults to 10, so a long `status_left` is cut off
+#   unless you raise it.
+#   In `status_left` / `status_right`, `%` is strftime.

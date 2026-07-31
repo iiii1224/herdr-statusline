@@ -1,0 +1,493 @@
+import json
+import pathlib
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+from tests.helpers import ROOT, base_env, make_executable, write_protocol
+
+RUNTIME = ROOT / "scripts/run-in-tmux"
+DEFAULT_OPTIONS = [("status-interval", "3"), ("status-position", "top")]
+
+FAKE_TMUX = """#!/bin/sh
+python3 - "$@" <<'PY_TMUX'
+import json, os, pathlib, subprocess, sys
+args = sys.argv[1:]
+log = pathlib.Path(os.environ['HSL_TEST_TMUX_LOG'])
+with log.open('a') as stream:
+    stream.write(json.dumps({'args': args, 'tmux': os.environ.get('TMUX', '')}) + '\\n')
+if 'set-option' in args and os.environ.get('HSL_TEST_TMUX_REJECT', '') in args:
+    print('rejected by the fake tmux', file=sys.stderr)
+    raise SystemExit(1)
+if 'new-session' in args:
+    pathlib.Path(os.environ['HSL_TEST_COMMAND_FILE']).write_text(args[-1])
+    raise SystemExit(0)
+if 'attach-session' in args:
+    command = pathlib.Path(os.environ['HSL_TEST_COMMAND_FILE']).read_text()
+    env = os.environ.copy()
+    env['TMUX'] = 'inner-socket'
+    raise SystemExit(subprocess.run(command, shell=True, env=env).returncode)
+raise SystemExit(0)
+PY_TMUX
+"""
+
+FAKE_HERDR = """#!/bin/sh
+python3 - "$@" <<'PY_HERDR'
+import json, os, pathlib, sys
+pathlib.Path(os.environ['HSL_TEST_HERDR_LOG']).write_text(json.dumps({
+    'args': sys.argv[1:],
+    'tmux': os.environ.get('TMUX', ''),
+    'session_present': 'HERDR_SESSION' in os.environ,
+    'session': os.environ.get('HERDR_SESSION', ''),
+}))
+message = os.environ.get('HSL_TEST_HERDR_STDERR', '')
+if message:
+    print(message, file=sys.stderr)
+raise SystemExit(int(os.environ.get('HSL_TEST_HERDR_EXIT', '0')))
+PY_HERDR
+"""
+
+
+# Runs inside the pane, so $TMUX points at the disposable server. Waits for the
+# status-interval=1 job to fire at least once, then records what the server
+# actually holds.
+SMOKE_HERDR = """#!/bin/sh
+python3 - "$@" <<'PY_SMOKE'
+import json, os, pathlib, subprocess, time
+
+def option(*args):
+    return subprocess.run(
+        ['tmux', *args], text=True, capture_output=True
+    ).stdout.strip()
+
+time.sleep(2.5)
+pathlib.Path(os.environ['HSL_TEST_HERDR_LOG']).write_text(json.dumps({
+    'justify': option('show-options', '-g', 'status-justify'),
+    'window_format': option('show-options', '-gw', 'window-status-format'),
+    'automatic_rename': option('show-options', '-gw', 'automatic-rename'),
+    'set_clipboard': option('show-options', '-s', 'set-clipboard'),
+    'window_name': option('display-message', '-p', '#W'),
+}))
+raise SystemExit(0)
+PY_SMOKE
+"""
+
+
+class TmuxRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = pathlib.Path(self.tmp.name)
+        self.fakebin = self.base / "bin"
+        self.fakebin.mkdir()
+        self.tmux_log = self.base / "tmux.jsonl"
+        self.herdr_log = self.base / "herdr.json"
+        self.command_file = self.base / "command"
+        self.private_tmp = self.base / "tmp"
+        self.private_tmp.mkdir()
+        make_executable(self.fakebin / "tmux", FAKE_TMUX)
+        make_executable(self.fakebin / "herdr", FAKE_HERDR)
+        self.env = base_env(self.base / "home", self.fakebin)
+        self.env.update(
+            {
+                "TMPDIR": str(self.private_tmp),
+                "HSL_TMUX_BIN": str(self.fakebin / "tmux"),
+                "HSL_HERDR_BIN": str(self.fakebin / "herdr"),
+                "HSL_TEST_TMUX_LOG": str(self.tmux_log),
+                "HSL_TEST_HERDR_LOG": str(self.herdr_log),
+                "HSL_TEST_COMMAND_FILE": str(self.command_file),
+                "HERDR_PLUGIN_CONFIG_DIR": "/cfg",
+                "HERDR_SESSION": "research",
+            }
+        )
+
+    def run_runtime(self, *args, options=None, **extra_env):
+        env = self.env.copy()
+        env.update(extra_env)
+        if "HSL_STATUS_OPTIONS" not in extra_env:
+            pairs = DEFAULT_OPTIONS if options is None else options
+            env["HSL_STATUS_OPTIONS"] = str(write_protocol(self.base, pairs))
+        return subprocess.run(
+            ["sh", str(RUNTIME), *args], cwd=ROOT, env=env, text=True, capture_output=True
+        )
+
+    def tmux_calls(self):
+        return [json.loads(line) for line in self.tmux_log.read_text().splitlines()]
+
+    def tmux_argv(self):
+        return [call["args"] for call in self.tmux_calls()]
+
+    def herdr_record(self):
+        return json.loads(self.herdr_log.read_text())
+
+    def sockets(self):
+        found = []
+        for args in self.tmux_argv():
+            if "new-session" in args:
+                found.append(args[args.index("-L") + 1])
+        return found
+
+    def test_preserves_spaces_quotes_globs_and_trailing_newlines(self):
+        args = ["plain", "value with space", "quote'\"", "*?[x]", "trailing\n\n"]
+        result = self.run_runtime(*args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.herdr_record()["args"], args)
+
+    def test_uses_a_unique_socket_and_a_dotless_session_name(self):
+        self.run_runtime("--session", "one")
+        self.run_runtime("--session", "two")
+        sockets = self.sockets()
+        self.assertEqual(len(sockets), 2)
+        self.assertNotEqual(sockets[0], sockets[1])
+        for args in self.tmux_argv():
+            if "-s" in args:
+                session = args[args.index("-s") + 1]
+                self.assertNotIn(".", session, "a dot breaks tmux -t targeting")
+
+    def test_isolates_the_outer_tmux_but_keeps_the_inner_one(self):
+        result = self.run_runtime("--session", "x", TMUX="outer-socket,1,2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for call in self.tmux_calls():
+            if "new-session" in call["args"] or "attach-session" in call["args"]:
+                self.assertEqual(call["tmux"], "", "outer TMUX must be unset")
+        self.assertEqual(self.herdr_record()["tmux"], "inner-socket")
+
+    def test_returns_the_herdr_exit_status_and_cleans_up(self):
+        result = self.run_runtime(HSL_TEST_HERDR_EXIT="37")
+        self.assertEqual(result.returncode, 37)
+        leftovers = [p.name for p in self.private_tmp.iterdir()]
+        self.assertEqual(leftovers, [], f"runtime directories leaked: {leftovers}")
+
+    def test_applies_each_option_with_the_prefix_derived_scope(self):
+        result = self.run_runtime(
+            options=[
+                ("status-justify", "centre"),
+                ("status-left", " #(echo hi) "),
+                ("window-status-format", " #I: #W "),
+                ("status-left-length", "40"),
+            ]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tails = [args[-4:] for args in self.tmux_argv()]
+        self.assertIn(["set-option", "-g", "status-justify", "centre"], tails)
+        self.assertIn(["set-option", "-g", "status-left", " #(echo hi) "], tails)
+        self.assertIn(["set-option", "-g", "status-left-length", "40"], tails)
+        self.assertIn(["set-option", "-gw", "window-status-format", " #I: #W "], tails)
+
+    def test_passes_format_characters_through_untouched(self):
+        raw = "#[fg=red]#{client_width}#(id)%H:%M$HOME 100%"
+        result = self.run_runtime(options=[("status-right", raw)])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            ["set-option", "-g", "status-right", raw],
+            [args[-4:] for args in self.tmux_argv()],
+        )
+
+    def test_applies_the_options_in_protocol_order(self):
+        # tmux folds status-bg into status-style; reordering changes the bar.
+        self.run_runtime(
+            options=[("status-style", "bg=colour238"), ("status-bg", "colour241")]
+        )
+        names = [args[-2] for args in self.tmux_argv() if args[-4:-3] == ["set-option"]]
+        self.assertLess(names.index("status-style"), names.index("status-bg"))
+
+    def test_never_takes_over_the_status_format(self):
+        self.run_runtime()
+        for args in self.tmux_argv():
+            for value in args:
+                self.assertNotIn("status-format", value)
+
+    def test_puts_the_config_directory_in_the_tmux_environment(self):
+        # `#(...)` jobs read it to find helper scripts.
+        result = self.run_runtime()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            ["set-environment", "-g", "HERDR_PLUGIN_CONFIG_DIR", "/cfg"],
+            [args[-4:] for args in self.tmux_argv()],
+        )
+
+    def test_names_the_window_so_the_window_list_is_stable(self):
+        self.run_runtime()
+        for args in self.tmux_argv():
+            if "new-session" in args:
+                self.assertEqual(args[args.index("-n") + 1], "herdr")
+                break
+        else:
+            self.fail("new-session was never called")
+
+    def test_stops_without_starting_herdr_when_tmux_rejects_an_option(self):
+        result = self.run_runtime(
+            options=[("status-style", "bogus")], HSL_TEST_TMUX_REJECT="status-style"
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("cannot apply statusline option status-style", result.stderr)
+        self.assertIn("rejected by the fake tmux", result.stderr)
+        self.assertFalse(self.herdr_log.exists())
+        self.assertNotIn(
+            ["wait-for", "-S", "hsl-start"], [args[-3:] for args in self.tmux_argv()]
+        )
+        self.assertEqual(list(self.private_tmp.iterdir()), [])
+
+    def test_rejects_a_protocol_whose_count_does_not_match(self):
+        options = self.base / "truncated"
+        # Hand-written on purpose: this is a format *violation*, so the real
+        # writer cannot produce it. Every valid fixture goes through
+        # helpers.write_protocol.
+        options.write_text("true\n2\nstatus-interval\n1\n")
+        result = self.run_runtime(HSL_STATUS_OPTIONS=str(options))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("invalid hsl-config output", result.stderr)
+        self.assertFalse(self.herdr_log.exists())
+
+    def test_removes_the_options_file_on_a_normal_exit(self):
+        options = write_protocol(self.base, DEFAULT_OPTIONS)
+        self.run_runtime(HSL_STATUS_OPTIONS=str(options))
+        self.assertFalse(options.exists())
+
+    def test_removes_the_options_file_when_tmux_is_missing(self):
+        options = write_protocol(self.base, DEFAULT_OPTIONS)
+        result = self.run_runtime(
+            HSL_STATUS_OPTIONS=str(options),
+            HSL_TMUX_BIN=str(self.base / "no-such-tmux"),
+        )
+        self.assertEqual(result.returncode, 127)
+        self.assertFalse(options.exists())
+
+    def test_runs_with_no_options_at_all(self):
+        result = self.run_runtime(options=[])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.herdr_log.exists())
+
+    def test_forwards_a_named_session_to_the_tmux_environment(self):
+        result = self.run_runtime("--session", "research")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            ["set-environment", "-g", "HERDR_SESSION", "research"],
+            [args[-4:] for args in self.tmux_argv()],
+        )
+        self.assertEqual(self.herdr_record()["session"], "research")
+
+    def test_never_hands_herdr_an_empty_session_name(self):
+        # An exported HERDR_SESSION="" makes herdr exit 2 with "session name
+        # cannot be empty" before it draws anything, so the pane dies and the
+        # user sees nothing but tmux's [exited].
+        result = self.run_runtime(HERDR_SESSION="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.herdr_record()["session_present"])
+        for args in self.tmux_argv():
+            self.assertNotEqual(args[-4:-1], ["set-environment", "-g", "HERDR_SESSION"])
+
+    def test_replays_the_wrapped_stderr_when_herdr_fails(self):
+        result = self.run_runtime(
+            HSL_TEST_HERDR_EXIT="2",
+            HSL_TEST_HERDR_STDERR="error: session name cannot be empty",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("error: session name cannot be empty", result.stderr)
+
+    def test_stays_quiet_when_the_wrapped_command_succeeds(self):
+        result = self.run_runtime(HSL_TEST_HERDR_STDERR="harmless chatter")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("harmless chatter", result.stderr)
+
+    def test_releases_the_start_barrier_after_configuration_and_before_attach(self):
+        result = self.run_runtime()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = self.tmux_argv()
+        configured = next(
+            index
+            for index, args in enumerate(argv)
+            if args[-4:] == ["set-option", "-g", "status-position", "top"]
+        )
+        released = next(
+            index
+            for index, args in enumerate(argv)
+            if args[-3:] == ["wait-for", "-S", "hsl-start"]
+        )
+        attached = next(
+            index for index, args in enumerate(argv) if "attach-session" in args
+        )
+        self.assertLess(configured, released)
+        self.assertLess(released, attached)
+        self.assertTrue(
+            any(args[-2:] == ["wait-for", "hsl-start"] for args in argv),
+            "launch.sh must wait on the matching barrier",
+        )
+
+    def test_base_conf_sets_the_two_stage_destroy_policy(self):
+        base = (ROOT / "tmux/base.conf").read_text()
+        self.assertIn("set-option -g destroy-unattached off", base)
+        self.assertIn("client-attached", base)
+        self.assertNotIn("allow-passthrough", base)
+        self.assertIn("set-option -gw automatic-rename off", base)
+        self.assertNotIn("status-justify", base)
+        self.assertNotIn("status-style", base)
+
+    def test_base_conf_enables_osc52_clipboard(self):
+        base = (ROOT / "tmux/base.conf").read_text()
+        self.assertIn("set-option -s set-clipboard on", base)
+
+    def test_signal_handlers_prefer_a_recorded_herdr_status(self):
+        runtime = RUNTIME.read_text()
+        self.assertIn("if final_status=$(recorded_status); then", runtime)
+        self.assertIn("trap 'on_signal 129' HUP", runtime)
+        self.assertIn("trap 'on_signal 130' INT", runtime)
+        self.assertIn("trap 'on_signal 143' TERM", runtime)
+
+    def test_reports_a_clear_error_when_tmux_is_missing(self):
+        result = self.run_runtime(HSL_TMUX_BIN=str(self.base / "no-such-tmux"))
+        self.assertEqual(result.returncode, 127)
+        self.assertIn("tmux is required", result.stderr)
+        self.assertFalse(self.herdr_log.exists())
+
+    def test_concurrent_invocations_do_not_collide(self):
+        processes = []
+        for index in range(3):
+            env = self.env.copy()
+            env["HSL_TEST_TMUX_LOG"] = str(self.base / f"tmux-{index}.jsonl")
+            env["HSL_TEST_HERDR_LOG"] = str(self.base / f"herdr-{index}.json")
+            env["HSL_TEST_COMMAND_FILE"] = str(self.base / f"command-{index}")
+            processes.append(
+                subprocess.Popen(
+                    ["sh", str(RUNTIME), "--session", f"s{index}"],
+                    cwd=ROOT,
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            )
+        for index, process in enumerate(processes):
+            process.communicate()
+            self.assertEqual(process.returncode, 0)
+            record = json.loads((self.base / f"herdr-{index}.json").read_text())
+            self.assertEqual(record["args"], ["--session", f"s{index}"])
+        self.assertEqual(list(self.private_tmp.iterdir()), [])
+
+
+class RealTmuxSmokeTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is not installed")
+    @unittest.skipUnless(shutil.which("script"), "util-linux script is not installed")
+    def test_starts_and_exits_a_real_disposable_server(self):
+        import shlex
+
+        with tempfile.TemporaryDirectory() as name:
+            base = pathlib.Path(name)
+            fakebin = base / "bin"
+            fakebin.mkdir()
+            log = base / "herdr.json"
+            options = write_protocol(base, [("status-interval", "1")])
+            make_executable(fakebin / "herdr", FAKE_HERDR)
+            env = base_env(base / "home", fakebin)
+            env.update(
+                {
+                    "HSL_HERDR_BIN": str(fakebin / "herdr"),
+                    "HSL_TEST_HERDR_LOG": str(log),
+                    "HSL_TEST_HERDR_EXIT": "41",
+                    "HSL_STATUS_OPTIONS": str(options),
+                    "HERDR_PLUGIN_CONFIG_DIR": str(base / "cfg"),
+                    "HERDR_SESSION": "smoke",
+                    "TMPDIR": str(base),
+                }
+            )
+            if env.get("TERM", "dumb") == "dumb":
+                env["TERM"] = "xterm-256color"
+            inner = shlex.join(["sh", str(RUNTIME), "--session", "smoke"])
+            result = subprocess.run(
+                ["script", "-qec", f"stty rows 40 cols 120; {inner}", "/dev/null"],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 41, result.stdout[-2000:])
+            self.assertEqual(json.loads(log.read_text())["args"], ["--session", "smoke"])
+            self.assertEqual(
+                [p.name for p in base.glob("herdr-statusline.*")],
+                [],
+                "the runtime directory must be removed",
+            )
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is not installed")
+    @unittest.skipUnless(shutil.which("script"), "util-linux script is not installed")
+    def test_a_real_server_applies_options_and_feeds_the_status_job(self):
+        import shlex
+
+        with tempfile.TemporaryDirectory() as name:
+            base = pathlib.Path(name)
+            fakebin = base / "bin"
+            fakebin.mkdir()
+            log = base / "herdr.json"
+            seen = base / "seen"
+            job = base / "job.sh"
+            # No `%` anywhere: status-left is passed through strftime first.
+            make_executable(
+                job, f'#!/bin/sh\nprintf "[$HERDR_SESSION]" > "{seen}"\necho hi\n'
+            )
+            make_executable(fakebin / "herdr", SMOKE_HERDR)
+
+            options = write_protocol(
+                base,
+                [
+                    ("status-interval", "1"),
+                    ("status-justify", "centre"),
+                    ("status-left", f"#({job})"),
+                    ("window-status-format", " #I: #W "),
+                ],
+            )
+
+            env = base_env(base / "home", fakebin)
+            env.update(
+                {
+                    "HSL_HERDR_BIN": str(fakebin / "herdr"),
+                    "HSL_TEST_HERDR_LOG": str(log),
+                    "HSL_STATUS_OPTIONS": str(options),
+                    "HERDR_PLUGIN_CONFIG_DIR": str(base / "cfg"),
+                    "HERDR_SESSION": "smoke",
+                    "TMPDIR": str(base),
+                }
+            )
+            if env.get("TERM", "dumb") == "dumb":
+                env["TERM"] = "xterm-256color"
+            inner = shlex.join(["sh", str(RUNTIME), "--session", "smoke"])
+            result = subprocess.run(
+                ["script", "-qec", f"stty rows 40 cols 120; {inner}", "/dev/null"],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout[-2000:])
+
+            record = json.loads(log.read_text())
+            # tmux quotes show-options values that have leading/trailing
+            # spaces, so parse with shlex instead of comparing raw strings.
+            self.assertEqual(
+                shlex.split(record["justify"]), ["status-justify", "centre"]
+            )
+            self.assertEqual(
+                shlex.split(record["window_format"]),
+                ["window-status-format", " #I: #W "],
+            )
+            self.assertEqual(
+                shlex.split(record["automatic_rename"]),
+                ["automatic-rename", "off"],
+            )
+            self.assertEqual(
+                shlex.split(record["set_clipboard"]),
+                ["set-clipboard", "on"],
+            )
+            self.assertEqual(record["window_name"], "herdr")
+
+            # The job ran, which means status-format still composes status-left,
+            # and it saw the session name from the tmux environment.
+            self.assertTrue(seen.exists(), "the status-left job never ran")
+            self.assertEqual(seen.read_text(), "[smoke]")
+
+            self.assertFalse(options.exists(), "the options file must be removed")
+            self.assertEqual(
+                [p.name for p in base.glob("herdr-statusline.*")],
+                [],
+                "the runtime directory must be removed",
+            )

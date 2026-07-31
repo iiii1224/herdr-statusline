@@ -1,0 +1,237 @@
+#!/bin/sh
+# Classify the Herdr command line, then either pass through or wrap in tmux.
+set -u
+
+PLUGIN_ID=herdr-statusline
+HERDR_BIN=${HSL_HERDR_BIN:-herdr}
+# herdr resolves its session name from --session, then HERDR_SESSION, then this
+# literal. Mirror it so the status line names the session herdr attached to.
+DEFAULT_SESSION=default
+root=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd)
+HELPER=$root/target/release/hsl-config
+RUN_TMUX=$root/scripts/run-in-tmux
+
+is_interactive() {
+    # A bare `hsl` attaches to the default session.
+    if [ "$#" -eq 0 ]; then
+        return 0
+    fi
+
+    # Two of herdr's options may precede an interactive form, but only when
+    # --remote is also present. Measured against herdr 0.7.5:
+    #
+    #   herdr --handoff --session foo    unknown option: --handoff
+    #   herdr --remote-keybindings local --session foo
+    #                                    error: --remote-keybindings requires --remote
+    #   herdr --handoff --remote host    accepted
+    #   herdr --remote-keybindings local --remote host
+    #                                    accepted
+    #
+    # So both are skipped together, gated on --remote. Skipping either without
+    # one would wrap a command herdr refuses to run in a tmux server -- the same
+    # reason the terminating globals (--default-config, --version/-V, --help/-h)
+    # are never skipped. --no-session, --session and --remote are not skipped
+    # because they ARE the forms that decide.
+    remote_attach=1
+    for scan_arg in "$@"; do
+        case $scan_arg in
+            --remote|--remote=*)
+                remote_attach=0
+                break
+                ;;
+        esac
+    done
+
+    skipped=0
+    while [ "$remote_attach" -eq 0 ] && [ "$#" -gt 0 ]; do
+        case $1 in
+            --handoff|--remote-keybindings=*)
+                shift
+                skipped=$((skipped + 1))
+                ;;
+            --remote-keybindings)
+                # The separated form takes a value; consume it when present so
+                # the token after it is not mistaken for the form that decides.
+                # herdr rejects a missing or malformed value itself.
+                shift
+                skipped=$((skipped + 1))
+                if [ "$#" -gt 0 ]; then
+                    shift
+                fi
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    # Only global options were given, e.g. `hsl --handoff`. herdr rejects those
+    # forms, so let it report instead of starting a tmux server for nothing.
+    if [ "$#" -eq 0 ]; then
+        return 1
+    fi
+
+    case $1 in
+        --session|--remote|--no-session|--session=*|--remote=*)
+            return 0
+            ;;
+        session|agent|terminal)
+            # Only when nothing was skipped: herdr rejects
+            # `--handoff session attach x`, and cli_session reads
+            # `session attach <name>` positionally from the original argv, so
+            # accepting it here would resolve the session name to `default`.
+            if [ "$skipped" -eq 0 ] && [ "${2:-}" = attach ]; then
+                return 0
+            fi
+            return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Anything not explicitly listed above stays a direct pass-through, so new
+# Herdr subcommands keep working without a plugin update.
+if ! is_interactive "$@"; then
+    exec "$HERDR_BIN" "$@"
+fi
+
+command -v "$HERDR_BIN" >/dev/null 2>&1 || {
+    printf '%s\n' 'hsl: herdr is not available in PATH' >&2
+    exit 127
+}
+[ -x "$HELPER" ] || {
+    printf '%s\n' "hsl: helper is missing or not executable: $HELPER" >&2
+    exit 2
+}
+
+plugin_json=$("$HERDR_BIN" plugin list --plugin "$PLUGIN_ID" --json) || {
+    printf '%s\n' 'hsl: cannot determine the Herdr plugin state' >&2
+    exit 2
+}
+state=$(printf '%s' "$plugin_json" | "$HELPER" plugin-state) || {
+    printf '%s\n' 'hsl: cannot determine the Herdr plugin state' >&2
+    exit 2
+}
+
+case $state in
+    enabled)
+        ;;
+    disabled)
+        exec "$HERDR_BIN" "$@"
+        ;;
+    not-installed)
+        printf '%s\n' "hsl: $PLUGIN_ID is not registered with Herdr" >&2
+        exit 2
+        ;;
+    *)
+        printf '%s\n' "hsl: invalid plugin state: $state" >&2
+        exit 2
+        ;;
+esac
+
+config_dir=$("$HERDR_BIN" plugin config-dir "$PLUGIN_ID") || {
+    printf '%s\n' 'hsl: failed to resolve the plugin config directory' >&2
+    exit 2
+}
+
+"$HELPER" init "$config_dir" || exit 2
+
+umask 077
+options=$(mktemp "${TMPDIR:-/tmp}/hsl-status-options.XXXXXX") || exit 1
+trap 'rm -f "$options"' EXIT HUP INT TERM
+"$HELPER" load "$config_dir/config.toml" >"$options" || exit 2
+
+enabled=$(sed -n '1p' "$options")
+case $enabled in
+    true|false) ;;
+    *)
+        printf '%s\n' 'hsl: invalid hsl-config output' >&2
+        exit 2
+        ;;
+esac
+
+if [ "$enabled" = false ]; then
+    # Nothing downstream will adopt the file, so drop it before handing the
+    # process to herdr.
+    rm -f "$options"
+    trap - EXIT HUP INT TERM
+    exec "$HERDR_BIN" "$@"
+fi
+
+[ -x "$RUN_TMUX" ] || {
+    printf '%s\n' "hsl: missing or not executable: $RUN_TMUX" >&2
+    exit 2
+}
+[ -r "$root/tmux/base.conf" ] || {
+    printf '%s\n' "hsl: missing tmux base configuration: $root/tmux/base.conf" >&2
+    exit 2
+}
+
+# Succeeds when the command line names a session, even when the name is empty:
+# an empty one is the user's mistake for herdr to report, not ours to replace.
+cli_session() {
+    if [ "${1:-}" = session ] && [ "${2:-}" = attach ] && [ "$#" -ge 3 ]; then
+        printf '%s' "$3"
+        return 0
+    fi
+    previous=
+    for arg in "$@"; do
+        case $arg in
+            --session=*)
+                printf '%s' "${arg#--session=}"
+                return 0
+                ;;
+        esac
+        if [ "$previous" = --session ]; then
+            printf '%s' "$arg"
+            return 0
+        fi
+        previous=$arg
+    done
+    return 1
+}
+
+# The default names one thing: this machine's persistent session. --no-session
+# runs herdr monolithically, and --remote attaches to a session on another host
+# whose name hsl has no way to know. Claiming "default" for either would lie.
+skips_the_local_session() {
+    for scan_arg in "$@"; do
+        case $scan_arg in
+            --no-session|--remote|--remote=*)
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+# The command line outranks the environment, as it does for herdr itself. The
+# ambient branch sits above the exclusion on purpose: dropping a value the user
+# exported would be a regression. Only the invented fallback is skipped.
+if herdr_session=$(cli_session "$@"); then
+    :
+elif [ -n "${HERDR_SESSION:-}" ]; then
+    herdr_session=$HERDR_SESSION
+elif skips_the_local_session "$@"; then
+    herdr_session=
+else
+    herdr_session=$DEFAULT_SESSION
+fi
+
+# herdr rejects a set-but-empty HERDR_SESSION with "session name cannot be
+# empty", so leave the variable out entirely rather than exporting a blank one.
+if [ -n "$herdr_session" ]; then
+    export HERDR_SESSION="$herdr_session"
+else
+    unset HERDR_SESSION
+fi
+
+# The trap stays armed on purpose. A successful exec discards it along with
+# this shell, and run-in-tmux adopts the file; a failed exec exits here and the
+# trap removes it.
+HSL_STATUS_OPTIONS=$options \
+HERDR_PLUGIN_CONFIG_DIR=$config_dir \
+HSL_HERDR_BIN=$HERDR_BIN \
+exec "$RUN_TMUX" "$@"

@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Rust tests
+        run: cargo test
+      - name: Build the release helper
+        run: cargo build --release --locked
+      - name: Python integration tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Shell syntax
+        run: |
+          sh -n bin/hsl-internal
+          sh -n scripts/build.sh
+          sh -n scripts/install-launcher.sh
+          sh -n scripts/lib/shell-quote.sh
+          sh -n scripts/launcher-body.sh
+          sh -n scripts/run-in-tmux
+          sh -n scripts/default-herdr-info.sh

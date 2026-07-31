@@ -1,0 +1,249 @@
+#!/bin/sh
+# Run Herdr inside a disposable, status-line-only tmux server.
+set -eu
+
+TMUX_BIN=${HSL_TMUX_BIN:-tmux}
+HERDR_BIN=${HSL_HERDR_BIN:-herdr}
+SESSION_NAME=hsl
+WINDOW_NAME=herdr
+STDERR_REPLAY_LIMIT=20
+root=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd)
+BASE_CONF=$root/tmux/base.conf
+
+# hsl-internal's trap died at its exec, so this file is ours to remove. Adopt it
+# before the tmux check below, which exits without reaching `trap cleanup`. An
+# unset value is legitimate: it means no options, exactly like an absent
+# [statusline] section.
+STATUS_OPTIONS=${HSL_STATUS_OPTIONS:-}
+remove_status_options() {
+    [ -n "$STATUS_OPTIONS" ] || return 0
+    rm -f "$STATUS_OPTIONS"
+}
+trap remove_status_options EXIT HUP INT TERM
+
+command -v "$TMUX_BIN" >/dev/null 2>&1 || {
+    printf '%s\n' 'hsl: tmux is required for interactive Herdr sessions' >&2
+    printf '%s\n' 'hsl: install tmux or set enabled = false' >&2
+    exit 127
+}
+
+# The tmux server inherits this environment and hands it to the pane, and herdr
+# refuses to start when HERDR_SESSION is set but empty. Drop it here so an
+# unnamed run reaches herdr with no session name at all.
+if [ -z "${HERDR_SESSION:-}" ]; then
+    unset HERDR_SESSION
+fi
+
+umask 077
+runtime=$(mktemp -d "${TMPDIR:-/tmp}/herdr-statusline.XXXXXX")
+# The socket must be unique per invocation; the session name must not be,
+# and must not contain a dot, or `-t` parses it as session.window.pane.
+socket="hsl-$(basename "$runtime")"
+conf=$runtime/tmux.conf
+launcher=$runtime/launch.sh
+exit_file=$runtime/exit-status
+stderr_file=$runtime/stderr
+args_dir=$runtime/args
+mkdir "$args_dir"
+
+cleanup() {
+    "$TMUX_BIN" -L "$socket" kill-server >/dev/null 2>&1 || true
+    rm -rf "$runtime"
+    remove_status_options
+}
+
+# A failing herdr often prints one line and exits before it draws anything, and
+# the pane is gone by the time we could read it, so replay the captured stderr.
+# Successful sessions stay silent: stray output would only be terminal noise.
+replay_stderr() {
+    [ "$1" -ne 0 ] || return 0
+    [ -s "$stderr_file" ] || return 0
+    lines=$(wc -l <"$stderr_file")
+    if [ "$lines" -gt "$STDERR_REPLAY_LIMIT" ]; then
+        printf 'hsl: showing the last %s of %s stderr lines\n' \
+            "$STDERR_REPLAY_LIMIT" "$lines" >&2
+    fi
+    tail -n "$STDERR_REPLAY_LIMIT" "$stderr_file" >&2
+}
+
+recorded_status() {
+    [ -f "$exit_file" ] || return 1
+    saved_status=$(sed -n '1p' "$exit_file")
+    case $saved_status in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s\n' "$saved_status"
+}
+
+on_signal() {
+    fallback=$1
+    if final_status=$(recorded_status); then
+        :
+    else
+        final_status=$fallback
+    fi
+    trap - EXIT HUP INT TERM
+    cleanup
+    exit "$final_status"
+}
+
+trap cleanup EXIT
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+
+QUOTE_LIB=$(CDPATH= cd -P "$(dirname "$0")" && pwd)/lib/shell-quote.sh
+[ -r "$QUOTE_LIB" ] || {
+    printf '%s\n' "hsl: missing shell quoting library: $QUOTE_LIB" >&2
+    exit 2
+}
+. "$QUOTE_LIB"
+# A missing or unparsable library aborts before here, but an empty or truncated
+# one is sourced successfully and defines nothing, leaving every quoted value to
+# expand to the empty string. Check the function, not the file.
+command -v shell_quote >/dev/null 2>&1 || {
+    printf '%s\n' "hsl: $QUOTE_LIB does not define shell_quote" >&2
+    exit 2
+}
+
+count=0
+for arg in "$HERDR_BIN" "$@"; do
+    printf '%s' "$arg" >"$args_dir/$count"
+    count=$((count + 1))
+done
+printf '%s\n' "$count" >"$args_dir/count"
+
+{
+    printf '#!/bin/sh\n'
+    printf 'set -u\n'
+    printf 'HSL_ARGS_DIR=%s\n' "$(shell_quote "$args_dir")"
+    printf 'HSL_EXIT_FILE=%s\n' "$(shell_quote "$exit_file")"
+    printf 'HSL_STDERR_FILE=%s\n' "$(shell_quote "$stderr_file")"
+    printf 'HSL_TMUX_BIN=%s\n' "$(shell_quote "$TMUX_BIN")"
+    cat <<'EOF_LAUNCH'
+# tmux destroys the pane the instant this exits, taking any diagnostics with
+# it, so keep stderr on disk for run-in-tmux to replay after the client leaves.
+exec 2>"$HSL_STDERR_FILE"
+set --
+count=$(sed -n '1p' "$HSL_ARGS_DIR/count")
+i=0
+while [ "$i" -lt "$count" ]; do
+    # The x sentinel survives command substitution stripping trailing newlines.
+    value=$(cat "$HSL_ARGS_DIR/$i"; printf x)
+    value=${value%x}
+    set -- "$@" "$value"
+    i=$((i + 1))
+done
+"$HSL_TMUX_BIN" wait-for hsl-start || exit 1
+"$@"
+status=$?
+printf '%s\n' "$status" >"$HSL_EXIT_FILE.tmp"
+mv "$HSL_EXIT_FILE.tmp" "$HSL_EXIT_FILE"
+exit "$status"
+EOF_LAUNCH
+} >"$launcher"
+chmod 700 "$launcher"
+
+cp "$BASE_CONF" "$conf"
+launcher_command="exec $(shell_quote "$launcher")"
+
+# A pseudo terminal without a backing terminal reports "0 0"; passing that to
+# tmux fails with "width too small", so every value is validated first.
+size=$(stty size 2>/dev/null </dev/tty) || size=
+rows=${size% *}
+cols=${size#* }
+case ${rows:-x} in ''|*[!0-9]*) size= ;; esac
+case ${cols:-x} in ''|*[!0-9]*) size= ;; esac
+if [ -n "$size" ] && { [ "$rows" -lt 3 ] || [ "$cols" -lt 10 ]; }; then
+    size=
+fi
+
+(
+    unset TMUX
+    if [ -n "$size" ]; then
+        exec "$TMUX_BIN" -L "$socket" -f "$conf" new-session -d -s "$SESSION_NAME" \
+            -n "$WINDOW_NAME" -x "$cols" -y "$rows" "$launcher_command"
+    else
+        exec "$TMUX_BIN" -L "$socket" -f "$conf" new-session -d -s "$SESSION_NAME" \
+            -n "$WINDOW_NAME" "$launcher_command"
+    fi
+)
+
+set_env() {
+    "$TMUX_BIN" -L "$socket" set-environment -g "$1" "$2"
+}
+
+set_env HERDR_PLUGIN_CONFIG_DIR "${HERDR_PLUGIN_CONFIG_DIR:-}"
+if [ -n "${HERDR_SESSION:-}" ]; then
+    set_env HERDR_SESSION "$HERDR_SESSION"
+fi
+
+# Values arrive as individual argv, never as text in $conf, so no quoting rule
+# applies to them. The scope follows from the name because window-status-* are
+# window options; the helper has already bounded the names to `status`,
+# `status-*` and `window-status-*`.
+apply_status_options() {
+    [ -n "$STATUS_OPTIONS" ] || return 0
+    [ -f "$STATUS_OPTIONS" ] || {
+        printf '%s\n' 'hsl: invalid hsl-config output' >&2
+        return 2
+    }
+    count=$(sed -n '2p' "$STATUS_OPTIONS")
+    case ${count:-x} in
+        ''|*[!0-9]*)
+            printf '%s\n' 'hsl: invalid hsl-config output' >&2
+            return 2
+            ;;
+    esac
+    lines=$(wc -l <"$STATUS_OPTIONS")
+    [ "$lines" -eq $((2 + count * 2)) ] || {
+        printf '%s\n' 'hsl: invalid hsl-config output' >&2
+        return 2
+    }
+    index=0
+    while [ "$index" -lt "$count" ]; do
+        name=$(sed -n "$((3 + index * 2))p" "$STATUS_OPTIONS")
+        # Command substitution strips the line terminator and nothing else, so
+        # a value's leading and trailing spaces survive.
+        value=$(sed -n "$((4 + index * 2))p" "$STATUS_OPTIONS")
+        case $name in
+            window-status-*) scope=-gw ;;
+            *) scope=-g ;;
+        esac
+        if ! failure=$("$TMUX_BIN" -L "$socket" set-option "$scope" "$name" "$value" 2>&1); then
+            printf 'hsl: cannot apply statusline option %s: %s\n' "$name" "$failure" >&2
+            return 2
+        fi
+        index=$((index + 1))
+    done
+}
+
+# A failure here must not reach herdr. The launcher is still blocked in
+# `wait-for hsl-start`, so exiting takes the whole server down with it.
+if ! apply_status_options; then
+    exit 2
+fi
+
+# Detect allow-passthrough by setting it, not by parsing tmux -V.
+"$TMUX_BIN" -L "$socket" set-option -g allow-passthrough on >/dev/null 2>&1 || true
+
+# `new-session` has created launch.sh, but the command is blocked in wait-for.
+# Release it only after every required option and environment value is ready.
+"$TMUX_BIN" -L "$socket" wait-for -S hsl-start
+
+if (
+    unset TMUX
+    exec "$TMUX_BIN" -L "$socket" attach-session -t "$SESSION_NAME"
+); then
+    tmux_status=0
+else
+    tmux_status=$?
+fi
+
+if status=$(recorded_status); then
+    :
+else
+    status=$tmux_status
+fi
+replay_stderr "$status"
+exit "$status"
