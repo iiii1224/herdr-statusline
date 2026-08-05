@@ -16,7 +16,12 @@ import json, os, pathlib, subprocess, sys
 args = sys.argv[1:]
 log = pathlib.Path(os.environ['HSL_TEST_TMUX_LOG'])
 with log.open('a') as stream:
-    stream.write(json.dumps({'args': args, 'tmux': os.environ.get('TMUX', '')}) + '\\n')
+    stream.write(json.dumps({
+        'args': args,
+        'tmux': os.environ.get('TMUX', ''),
+        'term_present': 'TERM' in os.environ,
+        'term': os.environ.get('TERM', ''),
+    }) + '\\n')
 if 'set-option' in args and os.environ.get('HSL_TEST_TMUX_REJECT', '') in args:
     print('rejected by the fake tmux', file=sys.stderr)
     raise SystemExit(1)
@@ -46,6 +51,36 @@ if message:
     print(message, file=sys.stderr)
 raise SystemExit(int(os.environ.get('HSL_TEST_HERDR_EXIT', '0')))
 PY_HERDR
+"""
+
+
+# The real terminfo database is whatever the developer's machine happens to
+# hold, so both lookup tools are faked and HSL_TEST_KNOWN_TERMS decides which
+# entries exist. run-in-tmux calls them as `tput -T <term> longname` and
+# `infocmp -- <term>`; nothing else is supported on purpose.
+FAKE_TPUT = """#!/bin/sh
+term=
+while [ $# -gt 0 ]; do
+    [ "$1" = -T ] && term=${2:-}
+    shift
+done
+for known in ${HSL_TEST_KNOWN_TERMS:-}; do
+    [ "$term" = "$known" ] || continue
+    printf '%s\\n' "$known"
+    exit 0
+done
+exit 3
+"""
+
+FAKE_INFOCMP = """#!/bin/sh
+term=
+for arg in "$@"; do
+    [ "$arg" = "--" ] || term=$arg
+done
+for known in ${HSL_TEST_KNOWN_TERMS:-}; do
+    [ "$term" = "$known" ] && exit 0
+done
+exit 1
 """
 
 
@@ -88,10 +123,15 @@ class TmuxRuntimeTests(unittest.TestCase):
         self.private_tmp.mkdir()
         make_executable(self.fakebin / "tmux", FAKE_TMUX)
         make_executable(self.fakebin / "herdr", FAKE_HERDR)
+        make_executable(self.fakebin / "tput", FAKE_TPUT)
+        make_executable(self.fakebin / "infocmp", FAKE_INFOCMP)
         self.env = base_env(self.base / "home", self.fakebin)
         self.env.update(
             {
                 "TMPDIR": str(self.private_tmp),
+                # Pinned so the developer's own terminal cannot alter a run.
+                "TERM": "xterm-256color",
+                "HSL_TEST_KNOWN_TERMS": "xterm-256color xterm",
                 "HSL_TMUX_BIN": str(self.fakebin / "tmux"),
                 "HSL_HERDR_BIN": str(self.fakebin / "herdr"),
                 "HSL_TEST_TMUX_LOG": str(self.tmux_log),
@@ -104,7 +144,12 @@ class TmuxRuntimeTests(unittest.TestCase):
 
     def run_runtime(self, *args, options=None, **extra_env):
         env = self.env.copy()
-        env.update(extra_env)
+        # A None value removes the variable, which no plain update() can do.
+        for key, value in extra_env.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
         if "HSL_STATUS_OPTIONS" not in extra_env:
             pairs = DEFAULT_OPTIONS if options is None else options
             env["HSL_STATUS_OPTIONS"] = str(write_protocol(self.base, pairs))
@@ -120,6 +165,14 @@ class TmuxRuntimeTests(unittest.TestCase):
 
     def herdr_record(self):
         return json.loads(self.herdr_log.read_text())
+
+    def attach_record(self):
+        # The client is what reads terminfo, so its environment is the contract.
+        # A pane's own TERM comes from tmux's default-terminal, not from here.
+        for call in self.tmux_calls():
+            if "attach-session" in call["args"]:
+                return call
+        self.fail("attach-session was never called")
 
     def sockets(self):
         found = []
@@ -152,6 +205,47 @@ class TmuxRuntimeTests(unittest.TestCase):
             if "new-session" in call["args"] or "attach-session" in call["args"]:
                 self.assertEqual(call["tmux"], "", "outer TMUX must be unset")
         self.assertEqual(self.herdr_record()["tmux"], "inner-socket")
+
+    # The symptom being prevented: a tmux client aborts with "missing or
+    # unsuitable terminal: $TERM" when the outer TERM has no terminfo entry.
+    def test_replaces_an_unknown_term_with_a_known_fallback(self):
+        result = self.run_runtime(TERM="xterm-rio")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.attach_record()["term"], "xterm-256color")
+        self.assertIn("xterm-rio", result.stderr)
+        self.assertIn("xterm-256color", result.stderr)
+
+    def test_keeps_a_term_the_terminfo_database_knows(self):
+        result = self.run_runtime(TERM="xterm")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.attach_record()["term"], "xterm")
+        self.assertNotIn("no terminfo entry", result.stderr)
+
+    def test_keeps_an_unknown_term_when_no_fallback_is_verifiable(self):
+        result = self.run_runtime(TERM="xterm-rio", HSL_TEST_KNOWN_TERMS="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.attach_record()["term"], "xterm-rio")
+
+    def test_prefers_the_configured_fallback_term(self):
+        result = self.run_runtime(
+            TERM="xterm-rio",
+            HSL_TEST_KNOWN_TERMS="rio xterm-256color",
+            HSL_FALLBACK_TERM="rio",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.attach_record()["term"], "rio")
+
+    def test_ignores_a_configured_fallback_the_system_does_not_know(self):
+        result = self.run_runtime(TERM="xterm-rio", HSL_FALLBACK_TERM="nonesuch")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.attach_record()["term"], "xterm-256color")
+
+    def test_leaves_an_absent_term_absent(self):
+        # No TERM at all is a non-interactive caller's business, not a
+        # terminal hsl should invent one for.
+        result = self.run_runtime(TERM=None)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.attach_record()["term_present"])
 
     def test_returns_the_herdr_exit_status_and_cleans_up(self):
         result = self.run_runtime(HSL_TEST_HERDR_EXIT="37")

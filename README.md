@@ -170,6 +170,28 @@ Herdr.
 
 - **Kitty Graphics Protocol:** Due to tmux limitations, Kitty graphics protocol output from `herdr` is not supported.
 
+### Unknown `TERM` (`missing or unsuitable terminal`)
+
+`herdr` never reads the terminfo database, but the tmux client `hsl` starts does.
+On a terminal newer than the installed ncurses (Rio's `xterm-rio`, Ghostty's
+`xterm-ghostty`), tmux finds no entry and aborts with
+`missing or unsuitable terminal: <TERM>`.
+
+`hsl` detects this before starting tmux and falls back to `xterm-256color`,
+printing a one-line notice. Set `HSL_FALLBACK_TERM` to choose a different entry:
+
+```sh
+HSL_FALLBACK_TERM=rio hsl
+```
+
+A candidate is used only if its entry exists; if none does, `TERM` is left
+untouched and tmux reports the error itself. For a permanent fix, install your
+terminal's terminfo entry:
+
+```sh
+tic -x -o ~/.terminfo /path/to/xterm-rio.terminfo
+```
+
 ### Emergency Session Teardown
 
 Because tmux prefix keys are disabled inside `hsl`, you cannot detach using standard tmux keybindings. If a session ever becomes unresponsive, kill it from another terminal:

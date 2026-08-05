@@ -34,6 +34,36 @@ if [ -z "${HERDR_SESSION:-}" ]; then
     unset HERDR_SESSION
 fi
 
+# herdr draws with hardcoded ANSI and never opens the terminfo database, so it
+# runs under any TERM. A tmux client does open it, and aborts with "missing or
+# unsuitable terminal: $TERM" when the entry is absent -- routine on terminals
+# newer than the installed ncurses (xterm-rio, xterm-ghostty).
+term_known() {
+    [ -n "$1" ] || return 1
+    if command -v tput >/dev/null 2>&1; then
+        tput -T "$1" longname >/dev/null 2>&1 && return 0
+    fi
+    if command -v infocmp >/dev/null 2>&1; then
+        infocmp -- "$1" >/dev/null 2>&1 && return 0
+    fi
+    return 1
+}
+
+# Only a confirmed entry is ever substituted, so a host with neither tput nor
+# infocmp keeps its TERM and lets tmux report the error itself.
+if [ -n "${TERM:-}" ] && ! term_known "$TERM"; then
+    # Quoted so a stray space or glob in the override cannot expand into extra
+    # candidates.
+    for candidate in "${HSL_FALLBACK_TERM:-}" xterm-256color xterm; do
+        term_known "$candidate" || continue
+        printf 'hsl: no terminfo entry for %s; using %s for tmux\n' \
+            "$TERM" "$candidate" >&2
+        TERM=$candidate
+        export TERM
+        break
+    done
+fi
+
 umask 077
 runtime=$(mktemp -d "${TMPDIR:-/tmp}/herdr-statusline.XXXXXX")
 # The socket must be unique per invocation; the session name must not be,
