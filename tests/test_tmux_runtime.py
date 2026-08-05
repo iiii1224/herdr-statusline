@@ -103,6 +103,8 @@ pathlib.Path(os.environ['HSL_TEST_HERDR_LOG']).write_text(json.dumps({
     'automatic_rename': option('show-options', '-gw', 'automatic-rename'),
     'set_clipboard': option('show-options', '-s', 'set-clipboard'),
     'window_name': option('display-message', '-p', '#W'),
+    'status': option('show-options', '-g', 'status'),
+    'status_format_1': option('show-options', '-g', 'status-format[1]'),
 }))
 raise SystemExit(0)
 PY_SMOKE
@@ -589,6 +591,76 @@ class RealTmuxSmokeTests(unittest.TestCase):
             # The job ran, which means status-format still composes status-left,
             # and it saw the session name from the tmux environment.
             self.assertTrue(seen.exists(), "the status-left job never ran")
+            self.assertEqual(seen.read_text(), "[smoke]")
+
+            self.assertFalse(options.exists(), "the options file must be removed")
+            self.assertEqual(
+                [p.name for p in base.glob("herdr-statusline.*")],
+                [],
+                "the runtime directory must be removed",
+            )
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is not installed")
+    @unittest.skipUnless(shutil.which("script"), "util-linux script is not installed")
+    def test_a_real_server_draws_and_feeds_a_second_status_line(self):
+        import shlex
+
+        with tempfile.TemporaryDirectory() as name:
+            base = pathlib.Path(name)
+            fakebin = base / "bin"
+            fakebin.mkdir()
+            log = base / "herdr.json"
+            seen = base / "seen"
+            job = base / "line1.sh"
+            # No `%` anywhere: the format is passed through strftime first.
+            make_executable(
+                job, f'#!/bin/sh\nprintf "[$HERDR_SESSION]" > "{seen}"\necho line1\n'
+            )
+            make_executable(fakebin / "herdr", SMOKE_HERDR)
+
+            options = write_protocol(
+                base,
+                [
+                    ("status-interval", "1"),
+                    ("status", "2"),
+                    ("status-format[1]", f"#[align=left]#({job})"),
+                ],
+            )
+
+            env = base_env(base / "home", fakebin)
+            env.update(
+                {
+                    "HSL_HERDR_BIN": str(fakebin / "herdr"),
+                    "HSL_TEST_HERDR_LOG": str(log),
+                    "HSL_STATUS_OPTIONS": str(options),
+                    "HERDR_PLUGIN_CONFIG_DIR": str(base / "cfg"),
+                    "HERDR_SESSION": "smoke",
+                    "TMPDIR": str(base),
+                }
+            )
+            if env.get("TERM", "dumb") == "dumb":
+                env["TERM"] = "xterm-256color"
+            inner = shlex.join(["sh", str(RUNTIME), "--session", "smoke"])
+            result = subprocess.run(
+                ["script", "-qec", f"stty rows 40 cols 120; {inner}", "/dev/null"],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout[-2000:])
+
+            record = json.loads(log.read_text())
+            self.assertEqual(shlex.split(record["status"]), ["status", "2"])
+            self.assertEqual(
+                shlex.split(record["status_format_1"]),
+                ["status-format[1]", f"#[align=left]#({job})"],
+            )
+
+            # The job ran, which means tmux drew the second line, and it saw
+            # the session name from the tmux environment just as a status-left
+            # job does.
+            self.assertTrue(seen.exists(), "the status-format[1] job never ran")
             self.assertEqual(seen.read_text(), "[smoke]")
 
             self.assertFalse(options.exists(), "the options file must be removed")
