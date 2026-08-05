@@ -89,8 +89,10 @@ always inside that boundary; what is being removed is an ergonomic veto, not a
 safety one. Nor does it grant a new capability: `#(...)` already runs a shell
 from `status_left`.
 
-The comment at `src/config.rs:77-83` is updated to say so, since it currently
-explains a rejection that will no longer exist.
+The doc comment at `src/config.rs:77-83` argues the boundary in terms of the
+prefixes alone and needs no change; the rationale being deleted lives inside
+the rejection's own message. The index rule gets a comment of its own,
+recording why a bare suffix match cannot capture a real option name.
 
 ### Validation: none beyond what tmux does
 
