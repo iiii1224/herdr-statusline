@@ -89,11 +89,15 @@ fn option_name(key: &str) -> Result<String, String> {
              and `window_status_*` can be set"
         ));
     }
-    if name == "status-format" {
-        return Err(format!(
-            "statusline option {key:?} cannot be set: it replaces `status_left`, \
-             `status_right` and the window list"
-        ));
+    // `status_format_1` is tmux's `status-format[1]`, the format of the second
+    // status line; TOML bare keys cannot hold brackets, hence the suffix. A
+    // bare suffix rule cannot capture a real option because no name in these
+    // two families ends in a digit. The digits are carried over verbatim:
+    // tmux normalises `[01]` to `[1]` and rejects an index it cannot parse.
+    if let Some(index) = name.strip_prefix("status-format-") {
+        if !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Ok(format!("status-format[{index}]"));
+        }
     }
     Ok(name)
 }
@@ -198,9 +202,59 @@ mod tests {
     }
 
     #[test]
-    fn rejects_status_format() {
-        let error = load_text("[statusline]\nstatus_format = \"x\"\n").unwrap_err();
-        assert!(error.contains("status_format"), "{error}");
+    fn indexes_status_format_for_the_extra_status_lines() {
+        assert_eq!(
+            options("[statusline]\nstatus_format_1 = \"x\"\n")[0].0,
+            "status-format[1]"
+        );
+    }
+
+    #[test]
+    fn carries_the_index_over_verbatim() {
+        // tmux normalises `[01]` to `[1]` and rejects an index it cannot
+        // parse, so nothing here parses one and nothing here can overflow.
+        assert_eq!(
+            options("[statusline]\nstatus_format_01 = \"x\"\n")[0].0,
+            "status-format[01]"
+        );
+    }
+
+    #[test]
+    fn leaves_an_unindexed_status_format_to_tmux() {
+        // tmux collapses the array to a single element, dropping its own
+        // status-format[1] and [2]. That is tmux's behaviour to own, not ours
+        // to veto.
+        assert_eq!(
+            options("[statusline]\nstatus_format = \"x\"\n")[0].0,
+            "status-format"
+        );
+    }
+
+    #[test]
+    fn does_not_index_names_that_only_look_indexed() {
+        // No tmux option in these two families ends in a digit, which is what
+        // makes a bare suffix rule safe; these are the near misses.
+        for (text, expected) in [
+            (
+                "[statusline]\nwindow_status_format = \"x\"\n",
+                "window-status-format",
+            ),
+            (
+                "[statusline]\nstatus_left_length = 20\n",
+                "status-left-length",
+            ),
+            (
+                "[statusline]\nstatus_format_1_2 = \"x\"\n",
+                "status-format-1-2",
+            ),
+            ("[statusline]\nstatus_format_ = \"x\"\n", "status-format-"),
+            (
+                "[statusline]\nstatus_format_abc = \"x\"\n",
+                "status-format-abc",
+            ),
+        ] {
+            assert_eq!(options(text)[0].0, expected, "{text:?}");
+        }
     }
 
     #[test]
