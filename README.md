@@ -95,19 +95,6 @@ window_status_current_format = "#[fg=colour255,bg=colour27,bold] #I: #W #[defaul
   - `$HERDR_SESSION`: The current Herdr session name.
   - `$HERDR_PLUGIN_CONFIG_DIR`: Path to the plugin configuration directory.
 
-### Multiple Status Lines
-
-`status` takes `on`, `off`, or `2`–`5`. Lines past the first are drawn from tmux's `status-format[N]`, written `status_format_N`:
-
-```toml
-status = 2
-status_format_1 = "#[align=left]#($HERDR_PLUGIN_CONFIG_DIR/herdr-info.sh)"
-```
-
-- Line 0 keeps tmux's default format, which is what composes `status_left`, `status_right`, `status_left_length` and the window list. Setting `status_format_0` replaces it, and those options stop having any effect.
-- Without a `status_format_N` of your own, line 1 shows tmux's pane list and line 2 its session list — both near-empty in the single-pane session `hsl` creates.
-- Each extra line takes a row from the `herdr` pane.
-
 ### Herdr integration with the tmux status line
 
 The generated `herdr-info.sh` is an example of how to integrate Herdr with
