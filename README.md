@@ -90,7 +90,7 @@ window_status_current_format = "#[fg=colour255,bg=colour27,bold] #I: #W #[defaul
 
 ### Statusline Options & Environment Variables
 
-- Options under `[statusline]` map directly to tmux status settings (`status`, `status-*`, and `window-status-*`, except `status-format`). Write option names using underscores in `config.toml` (e.g., `status_style`, `window_status_format`), which are automatically converted to hyphens for tmux.
+- Options under `[statusline]` map directly to tmux status settings (`status`, `status-*`, and `window-status-*`). Write option names using underscores in `config.toml` (e.g., `status_style`, `window_status_format`), which are automatically converted to hyphens for tmux.
 - Inside `#(...)` shell commands, two environment variables are available:
   - `$HERDR_SESSION`: The current Herdr session name.
   - `$HERDR_PLUGIN_CONFIG_DIR`: Path to the plugin configuration directory.

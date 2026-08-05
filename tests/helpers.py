@@ -3,6 +3,7 @@
 import json
 import os
 import pathlib
+import re
 import stat
 import subprocess
 
@@ -65,7 +66,11 @@ def write_protocol(base, pairs, enabled=True):
         # TOML basic strings share JSON's escapes over the printable subset, so
         # json.dumps yields a correct literal for embedded quotes and
         # backslashes. An f-string with bare quotes would corrupt those.
-        lines.append(f'{name.replace("-", "_")} = {json.dumps(value)}')
+        # `status-format[1]` is written `status_format_1` in config.toml,
+        # because a TOML bare key cannot hold brackets. Every other option is
+        # the tmux name with hyphens swapped for underscores.
+        key = re.sub(r"\[(\d+)\]$", r"_\1", name).replace("-", "_")
+        lines.append(f"{key} = {json.dumps(value)}")
     config = base / "protocol-config.toml"
     config.write_text("\n".join(lines) + "\n")
     result = subprocess.run(
