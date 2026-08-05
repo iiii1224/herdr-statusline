@@ -40,7 +40,7 @@ status_right = "%m/%d %H:%M:%S"
 #   session name use $HERDR_SESSION inside `#(...)`.
 #   `status_left_length` defaults to 10, so a long `status_left` is cut off
 #   unless you raise it.
-#   In `status_left` / `status_right`, `%` is strftime.
+#   In `status_left` / `status_right` / `status_format_N`, `%` is strftime.
 #   `status` takes on, off or 2-5. Lines past the first come from
 #   status_format_N, tmux's status-format[N]. status_format_0 replaces the
 #   default that composes status_left, status_right and the window list.
