@@ -286,6 +286,18 @@ class TmuxRuntimeTests(unittest.TestCase):
         names = [args[-2] for args in self.tmux_argv() if args[-4:-3] == ["set-option"]]
         self.assertLess(names.index("status-style"), names.index("status-bg"))
 
+    def test_applies_an_indexed_status_format_to_the_session(self):
+        # status-format is a session option, so the name must route to -g even
+        # though every other multi-line concern is a window option.
+        self.run_runtime(
+            options=[("status", "2"), ("status-format[1]", "#[align=left]second")]
+        )
+        tails = [args[-4:] for args in self.tmux_argv()]
+        self.assertIn(["set-option", "-g", "status", "2"], tails)
+        self.assertIn(
+            ["set-option", "-g", "status-format[1]", "#[align=left]second"], tails
+        )
+
     def test_never_takes_over_the_status_format(self):
         self.run_runtime()
         for args in self.tmux_argv():
