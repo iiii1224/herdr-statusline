@@ -6,6 +6,9 @@ use tempfile::NamedTempFile;
 
 const DEFAULT_CONFIG: &str = include_str!("../scripts/default-config.toml");
 const DEFAULT_HERDR_INFO: &str = include_str!("../scripts/default-herdr-info.sh");
+const CUSTOMIZE_SKILL: &str = include_str!("../skills/customize-herdr-statusline/SKILL.md");
+const CUSTOMIZE_SKILL_OPENAI: &str =
+    include_str!("../skills/customize-herdr-statusline/agents/openai.yaml");
 
 pub fn initialize(config_dir: &Path) -> Result<(), String> {
     configdir::validate(config_dir)?;
@@ -13,7 +16,38 @@ pub fn initialize(config_dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("cannot create {}: {e}", config_dir.display()))?;
     create_if_missing(config_dir, "config.toml", DEFAULT_CONFIG, 0o600)?;
     create_if_missing(config_dir, "herdr-info.sh", DEFAULT_HERDR_INFO, 0o700)?;
+    let skill_dir = config_dir.join(".agents/skills/customize-herdr-statusline");
+    fs::create_dir_all(skill_dir.join("agents"))
+        .map_err(|e| format!("cannot create {}: {e}", skill_dir.display()))?;
+    create_if_missing(&skill_dir, "SKILL.md", CUSTOMIZE_SKILL, 0o600)?;
+    create_if_missing(
+        &skill_dir.join("agents"),
+        "openai.yaml",
+        CUSTOMIZE_SKILL_OPENAI,
+        0o600,
+    )?;
+    let claude_skills = config_dir.join(".claude/skills");
+    fs::create_dir_all(&claude_skills)
+        .map_err(|e| format!("cannot create {}: {e}", claude_skills.display()))?;
+    let claude_skill = claude_skills.join("customize-herdr-statusline");
+    create_symlink_if_missing(
+        &claude_skill,
+        Path::new("../../.agents/skills/customize-herdr-statusline"),
+    )?;
     Ok(())
+}
+
+fn create_symlink_if_missing(link: &Path, target: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(link) {
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("cannot inspect {}: {error}", link.display())),
+    }
+    match std::os::unix::fs::symlink(target, link) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(format!("cannot create {}: {error}", link.display())),
+    }
 }
 
 fn create_if_missing(dir: &Path, name: &str, body: &str, mode: u32) -> Result<(), String> {
@@ -74,6 +108,80 @@ mod tests {
                 ("status-interval".to_string(), "1".to_string()),
                 ("status-right".to_string(), "%m/%d %H:%M:%S".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn installs_the_customization_skill_without_overwriting_user_changes() {
+        let temp = tempdir().unwrap();
+        let dir = config_dir(&temp);
+        initialize(&dir).unwrap();
+
+        let installed_skill = dir.join(".agents/skills/customize-herdr-statusline");
+        let shipped_skill =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/customize-herdr-statusline");
+        for relative in ["SKILL.md", "agents/openai.yaml"] {
+            let installed = installed_skill.join(relative);
+            assert!(
+                installed.is_file(),
+                "the coding-agent skill must be installed"
+            );
+            assert_eq!(
+                fs::read_to_string(installed).unwrap(),
+                fs::read_to_string(shipped_skill.join(relative)).unwrap()
+            );
+        }
+
+        let installed = installed_skill.join("SKILL.md");
+        fs::write(&installed, "user-customized skill\n").unwrap();
+        initialize(&dir).unwrap();
+        assert_eq!(
+            fs::read_to_string(installed).unwrap(),
+            "user-customized skill\n"
+        );
+    }
+
+    #[test]
+    fn links_the_customization_skill_into_claude_code_discovery() {
+        let temp = tempdir().unwrap();
+        let dir = config_dir(&temp);
+        initialize(&dir).unwrap();
+
+        let link = dir.join(".claude/skills/customize-herdr-statusline");
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "Claude Code must see a skill-directory symlink"
+        );
+        assert_eq!(
+            fs::read_link(&link).unwrap(),
+            Path::new("../../.agents/skills/customize-herdr-statusline")
+        );
+        assert_eq!(
+            fs::canonicalize(link).unwrap(),
+            fs::canonicalize(dir.join(".agents/skills/customize-herdr-statusline")).unwrap()
+        );
+    }
+
+    #[test]
+    fn preserves_an_existing_claude_code_skill_path() {
+        let temp = tempdir().unwrap();
+        let dir = config_dir(&temp);
+        let existing = dir.join(".claude/skills/customize-herdr-statusline");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join("SKILL.md"), "user-managed Claude skill\n").unwrap();
+
+        initialize(&dir).unwrap();
+
+        assert!(!fs::symlink_metadata(&existing)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_to_string(existing.join("SKILL.md")).unwrap(),
+            "user-managed Claude skill\n"
         );
     }
 

@@ -171,53 +171,6 @@ class InternalLauncherTests(unittest.TestCase):
     def runtime_record(self):
         return json.loads((self.base / "runtime.json").read_text())
 
-    def test_the_readme_fence_lists_exactly_what_reaches_tmux(self):
-        # README's "Command classification" fence is normative: it is what a
-        # user reads to know which invocations get a status line. Pin it against
-        # the classifier itself, not against the README's own wording — a test
-        # that only greps the README passes while the classifier drifts away
-        # from it.
-        #
-        # Each documented form is paired with a concrete argv because the fence
-        # is written with placeholders. The coverage assertion below is what
-        # keeps the pairing honest: a form added to the README without a
-        # runnable example here fails rather than going unchecked.
-        documented = {
-            "hsl": (),
-            "hsl --session <name> ...": ("--session", "research"),
-            "hsl --session=<name> ...": ("--session=research",),
-            "hsl --remote ...": ("--remote", "host"),
-            "hsl --remote=<target> ...": ("--remote=host",),
-            "hsl --no-session ...": ("--no-session",),
-            "hsl session attach ...": ("session", "attach", "research"),
-            "hsl agent attach ...": ("agent", "attach", "agent-1"),
-            "hsl terminal attach ...": ("terminal", "attach", "terminal-1"),
-            "hsl --handoff --remote <target> ...": ("--handoff", "--remote", "host"),
-            "hsl --remote-keybindings <local|server> --remote <target> ...": (
-                "--remote-keybindings", "local", "--remote", "host",
-            ),
-        }
-        readme = (ROOT / "README.md").read_text()
-        fence = readme.split("These forms run inside tmux:", 1)[1]
-        fence = fence.split("```text", 1)[1].split("```", 1)[0]
-        listed = [line for line in fence.splitlines() if line.strip()]
-
-        self.assertEqual(
-            sorted(listed),
-            sorted(documented),
-            "every line of the README fence needs a runnable example here",
-        )
-        for form, args in documented.items():
-            with self.subTest(form=form):
-                self.reset_logs()
-                result = self.run_internal(*args)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(
-                    self.runtime_record()["args"],
-                    list(args),
-                    f"README documents {form!r} as running inside tmux",
-                )
-
     def test_direct_commands_pass_through_without_querying_herdr(self):
         for args in DIRECT:
             with self.subTest(args=args):

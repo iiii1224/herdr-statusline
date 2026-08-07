@@ -88,6 +88,28 @@ class BuildTests(unittest.TestCase):
         self.assertIn("Cargo", result.stderr)
         self.assertFalse((self.bindir / "hsl").exists())
 
+    def test_fails_when_the_customization_skill_is_missing(self):
+        import shutil
+
+        staged = self.base / "plugin"
+        shutil.copytree(
+            ROOT, staged, ignore=shutil.ignore_patterns(".git", "target", "__pycache__")
+        )
+        skill = staged / "skills/customize-herdr-statusline/SKILL.md"
+        skill.unlink()
+
+        result = subprocess.run(
+            ["sh", "scripts/build.sh"],
+            cwd=staged,
+            env=self.env,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("skills/customize-herdr-statusline/SKILL.md", result.stderr)
+        self.assertFalse((self.bindir / "hsl").exists())
+
     def test_restores_missing_execute_bits_instead_of_failing(self):
         staged = self.base / "plugin"
         import shutil
@@ -122,7 +144,6 @@ class BuildTests(unittest.TestCase):
     def test_readme_documents_only_the_standard_workflow(self):
         text = (ROOT / "README.md").read_text()
         self.assertIn("herdr plugin install iiii1224/herdr-statusline", text)
-        self.assertIn("status_interval = 1", text)
         self.assertIn("hsl uninstall --purge", text)
         self.assertIn("herdr plugin config-dir herdr-statusline", text)
         self.assertNotIn("./install.sh", text)

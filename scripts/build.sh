@@ -30,7 +30,9 @@ for required in bin/hsl-internal scripts/run-in-tmux; do
 done
 for readable in tmux/base.conf scripts/launcher-body.sh scripts/install-launcher.sh \
                 scripts/lib/shell-quote.sh \
-                scripts/default-config.toml scripts/default-herdr-info.sh; do
+                scripts/default-config.toml scripts/default-herdr-info.sh \
+                skills/customize-herdr-statusline/SKILL.md \
+                skills/customize-herdr-statusline/agents/openai.yaml; do
     [ -r "$root/$readable" ] || {
         printf '%s\n' "build.sh: missing required file: $readable" >&2
         exit 1

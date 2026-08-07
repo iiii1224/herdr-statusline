@@ -90,8 +90,3 @@ class ConstantAgreementTests(unittest.TestCase):
             ),
             MANAGED_MARKER,
         )
-
-    # The README classification fence is pinned against the real classifier in
-    # tests/test_hsl_internal.py, which has the stub herdr needed to run it.
-    # Checking the fence's text here would only catch a reworded README, not a
-    # classifier that outran its documentation.

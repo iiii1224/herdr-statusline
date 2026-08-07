@@ -1,0 +1,4 @@
+interface:
+  display_name: "Customize Herdr Statusline"
+  short_description: "Customize the Herdr tmux status line"
+  default_prompt: "Use $customize-herdr-statusline to customize my Herdr status line."
