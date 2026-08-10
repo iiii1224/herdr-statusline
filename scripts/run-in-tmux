@@ -8,7 +8,9 @@ SESSION_NAME=hsl
 WINDOW_NAME=herdr
 STDERR_REPLAY_LIMIT=20
 root=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd)
-BASE_CONF=$root/tmux/base.conf
+# Overridable for tests only: the root-table guard has to start a server
+# without `unbind-key -a -T root` and show that pass-through breaks.
+BASE_CONF=${HSL_TEST_BASE_CONF:-$root/tmux/base.conf}
 
 # hsl-internal's trap died at its exec, so this file is ours to remove. Adopt it
 # before the tmux check below, which exits without reaching `trap cleanup`. An
