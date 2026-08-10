@@ -105,6 +105,7 @@ pathlib.Path(os.environ['HSL_TEST_HERDR_LOG']).write_text(json.dumps({
     'window_name': option('display-message', '-p', '#W'),
     'status': option('show-options', '-g', 'status'),
     'status_format_1': option('show-options', '-g', 'status-format[1]'),
+    'root_keys': option('list-keys', '-T', 'root'),
 }))
 raise SystemExit(0)
 PY_SMOKE
@@ -625,6 +626,12 @@ class RealTmuxSmokeTests(unittest.TestCase):
                 ["set-clipboard", "on"],
             )
             self.assertEqual(record["window_name"], "herdr")
+
+            # `unbind-key -a` clears only the prefix table. tmux keeps 24
+            # default mouse bindings in root, inert while the mouse is off but
+            # ready to take copy-mode, the pane context menu, the kill-pane
+            # menu and border resize away from Herdr the moment it goes on.
+            self.assertEqual(record["root_keys"], "")
 
             # The job ran, which means status-format still composes status-left,
             # and it saw the session name from the tmux environment.
