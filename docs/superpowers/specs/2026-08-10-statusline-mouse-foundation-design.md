@@ -284,20 +284,38 @@ if ! apply_mouse_clicks; then
 fi
 ```
 
-### 5.6 `scripts/default-config.toml` — 契約の説明
+### 5.6 tmux バージョンの扱い — 検出もゲートもしない
+
+本リポジトリは tmux の最低バージョンを宣言しておらず、`scripts/run-in-tmux:257` に
+「`allow-passthrough` は `tmux -V` を parse せず、設定してみることで検出する」という
+明示的な作法がある。本変更もこれに従い、**バージョン判定を一切追加しない。**
+
+根拠として、機能ごとに必要な tmux 世代と、古い tmux での劣化の仕方を整理する。
+
+| 使う機能 | 誰が使うか | 古い tmux での挙動 |
+| --- | --- | --- |
+| `set-option -g mouse`、`bind-key -n`、`MouseDown1Status` 等のキー名 | **本プラグイン** | tmux のマウスキー機構そのものであり、`mouse` オプションが存在する世代なら動く。存在しなければ `set-option` が失敗し、§5.5 の `return 2` で起動が止まる（`exit 2`）ため、黙って壊れることはない |
+| `#{mouse_status_range}` | **本プラグイン**（binding の引数） | 未知の `#{...}` は空文字列に展開される。フックは空の `$2` を受け取り、契約どおり何もせず終了する。劣化は静かだが安全 |
+| `#[range=user\|X]` | **ユーザー / 別リポジトリ**（status format 内） | プラグインは書かない。ユーザーが書いた format の可搬性はユーザーの責任であり、既存の `#(...)` や `#{...}` と同じ扱い |
+
+つまりプラグインが持ち込む唯一の失敗モードは「`mouse` オプションが無い tmux で
+`set-option` が失敗する」であり、それは既に `exit 2` で顕在化する。追加のガードは
+不要であり、入れれば `tmux -V` 非依存という既存方針に反する。
+
+### 5.7 `scripts/default-config.toml` — 契約の説明
 
 `enabled` の近くに `mouse_clicks` のコメントを追加し、`on-click.sh` の契約（§6）と
 `#[range=user|X]` の書き方、および §8 の制約を簡潔に記す。既定値は変更しない
 （コメントアウトのまま置き、有効化はユーザーの明示的な操作とする）。
 
-### 5.7 `init.rs` — テンプレートは作らない
+### 5.8 `init.rs` — テンプレートは作らない
 
 `on-click.sh` は別リポジトリの所有物である。プラグインが空のテンプレートを
 `create_if_missing` で置くと、別リポジトリのインストールと衝突する
 （`create_if_missing` は既存ファイルを上書きしないため、プラグインが先に空ファイルを
 作ると別リポジトリの本体が入らなくなる）。よって `init.rs` は変更しない。
 
-### 5.8 `skills/customize-herdr-statusline/SKILL.md`
+### 5.9 `skills/customize-herdr-statusline/SKILL.md`
 
 以下を追記する。
 
