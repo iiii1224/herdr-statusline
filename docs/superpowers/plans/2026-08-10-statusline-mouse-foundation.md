@@ -1074,17 +1074,19 @@ Run: `python3 -m pytest tests/test_tmux_mouse.py -q`
 Expected: FAIL。`tests/mouse_pty.py` の import か、フックが呼ばれず空の
 `lines()` になる。
 
-- [ ] **Step 4: 座標を実測で合わせる**
+- [ ] **Step 4: 座標の裏取り（確定値。変更不要）**
 
-`BTN` の描画位置に依存するので、失敗したらまず実際の当たり判定を確かめる。
-仕様 F14 のとおり右端が 1 カラム広い点にも注意する。
+上のテストの座標は実測済みで、`col=3` / `row=24` が `x=2`・`line=0` を生む。
+`status-format[0]` が `#[align=left]#[range=user|btn] BTN #[norange]tail` のとき、
+描画は `x=0` が空白、`x=1..3` が `BTN`、`x=4` が空白、`x=5` 以降が `tail`。
+range の当たり判定は仕様 F14 により `x=0..5`（右端が 1 カラム広い）。`col=40` は
+どの range にも入らないため不発になる。
+
+テストが落ちた場合にだけ、次で実際の当たり判定を確かめる。
 
 ```bash
 tmux -L hsl-mouse-test display-message -p '#{status-format[0]}'
 ```
-
-期待どおり `left|btn|2|0` が出るまで `click(col, 24)` の `col` を調整し、
-確定した値をテストに固定する。
 
 - [ ] **Step 5: テストが通ることを確認**
 
