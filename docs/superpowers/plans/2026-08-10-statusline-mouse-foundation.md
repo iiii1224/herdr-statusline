@@ -252,8 +252,10 @@ EOF
         self.assertIn("invalid hsl-config output", result.stderr)
 
     def test_rejects_an_old_writer_protocol(self):
-        # Old writer, new runner: no mouse_clicks line, so the line count and
-        # the count field disagree and the runtime must refuse to start.
+        # Old writer, new runner: line 2 holds the option count, so the
+        # boolean check rejects it before the line count is even reached.
+        # Either way the runtime must refuse to start rather than misapply
+        # options shifted by one line.
         old = self.base / "old-options"
         old.write_text("true\n1\nstatus-interval\n3\n")
         result = self.run_runtime("--session", "x", HSL_STATUS_OPTIONS=str(old))
