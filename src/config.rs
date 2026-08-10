@@ -83,11 +83,17 @@ fn normalize(raw: RawConfig) -> Result<NormalizedConfig, String> {
 
 /// Map a config key to a tmux option name and bound what may be set.
 ///
-/// The prefixes are the whole safety argument: no option named `status`,
-/// `status-*` or `window-status-*` can reach `prefix`, key bindings, `mouse`,
-/// hooks, `destroy-unattached` or `remain-on-exit`, so the disposable session's
+/// The prefixes bound the blast radius: no option named `status`, `status-*`
+/// or `window-status-*` can reach `prefix`, key bindings, `mouse`, hooks,
+/// `destroy-unattached` or `remain-on-exit`, so the disposable session's
 /// invariants cannot be configured away. Whether a name exists at all is
 /// tmux's business, which keeps this free of an option table to maintain.
+///
+/// This is no longer the whole safety argument. The top-level `mouse_clicks`
+/// key is a bounded exception to "tmux takes no input": it turns the mouse on
+/// and installs four fixed root bindings, whose names and bodies are hardcoded
+/// in run-in-tmux and cannot be reached from here. Everything else about the
+/// session stays as it was.
 fn option_name(key: &str) -> Result<String, String> {
     let name = key.replace('_', "-");
     if !(name == "status" || name.starts_with("status-") || name.starts_with("window-status-")) {

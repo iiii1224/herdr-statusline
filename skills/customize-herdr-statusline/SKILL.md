@@ -56,6 +56,27 @@ Apply these rules:
 
 Put non-trivial data collection in a small POSIX shell helper in the config directory. Make a new helper owner-executable, handle missing commands or data without noisy stderr, and print exactly one status-line value. Follow the shipped `herdr-info.sh` when Herdr pane, working-directory, or Git state is requested.
 
+## Status line buttons
+
+Clickable areas need `mouse_clicks = true` at the top level of `config.toml`,
+next to `enabled`, and tmux 3.4 or newer. Clicks go to `on-click.sh` in the
+config directory, which the user or another plugin owns; this skill does not
+create it. Turning the feature on costs the terminal its native selection and
+middle-click paste, so say so before enabling it for someone.
+
+Mark an area with `#[range=user|NAME]` ... `#[norange]`. `NAME` is at most 15
+bytes and reaches the hook as its second argument. Shell metacharacters are
+carried safely, but keep names to letters, digits and `_` for readability.
+
+Three constraints shape the layout:
+
+- Put user ranges in a `status_format_N` you define yourself. Inside
+  `status_left` and `status_right` tmux wraps them in `range=left` and
+  `range=right`, which shifts the clickable area one column right of the text.
+- The clickable area always extends one column past the last character.
+- There is no hover: tmux has no `MouseMove` binding, so a button has to look
+  clickable on its own.
+
 ## Validate before reporting
 
 Run `sh -n` on every shell helper you changed.
