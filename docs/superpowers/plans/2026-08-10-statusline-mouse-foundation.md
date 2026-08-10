@@ -1351,12 +1351,24 @@ Two constraints shape the layout:
 - [ ] **Step 5: 検証**
 
 ```bash
-sh -n scripts/default-config.toml 2>/dev/null || true   # TOML なので構文チェックは不要
 cargo test --quiet
 python3 -m pytest tests/ -q
 ```
-Expected: すべて PASS。`tests/test_consistency.py` がテンプレートの同期を見ているので、
-`default-config.toml` の変更で落ちないことを確認する。
+
+Expected: すべて PASS。`default-config.toml` は TOML なので `sh -n` の対象外。
+
+このステップで壊しやすいのは次の 2 つで、いずれも **`mouse_clicks` をコメントアウトの
+まま置く限り通る**。
+
+- `src/init.rs` の `creates_both_files_and_the_shipped_config_parses` は、既定
+  `config.toml` の解析結果が `status-interval = 1` と `status-right` の 2 件だけで
+  あることを検査する。コメント行は解析結果を変えない
+- `src/init.rs` の `ships_the_repository_copy_of_each_template` は、インストールされた
+  ファイルがリポジトリのテンプレートと**バイト一致**することを検査する。どちらも同じ
+  `include_str!` 由来なので、テンプレートだけを編集する限り一致は保たれる
+
+`tests/test_consistency.py` はプラグイン ID・バージョン・ヘルパーパス・managed marker の
+整合だけを見ており、本タスクの変更対象と重ならない。
 
 - [ ] **Step 6: コミット**
 
