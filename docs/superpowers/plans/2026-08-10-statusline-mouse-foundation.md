@@ -1374,9 +1374,16 @@ binding の存在確認では足りない。**実際にイベントを送り、�
 class RootTableGuardTests(MouseIntegrationBase):
     def test_pass_through_breaks_without_the_root_table_clear(self):
         # Guards tmux/base.conf's `unbind-key -a -T root`. Removing that line
-        # brings tmux's defaults back; DoubleClick1Pane then runs copy-mode
+        # brings tmux's defaults back; M-MouseDown3Pane then opens a menu
         # instead of forwarding, so the application stops seeing what the
         # terminal sent.
+        #
+        # The discriminator must exist on every supported tmux and have no
+        # forwarding branch. DoubleClick1Pane has neither property: it
+        # forwards with send-keys -M whenever mouse_any_flag is set, which is
+        # exactly this case. C-MouseDown1Pane only arrived in 3.7, so it
+        # would pass through on 3.4 to 3.6. M-MouseDown3Pane was measured on
+        # 3.6b and 3.7b and consumes the event on both.
         original = (ROOT / "tmux/base.conf").read_text()
         self.assertIn("unbind-key -a -T root", original,
                       "base.conf must still clear the root table")

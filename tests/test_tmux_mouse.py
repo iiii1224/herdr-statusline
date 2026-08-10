@@ -114,12 +114,22 @@ class StatusClickTests(MouseIntegrationBase):
 
     def test_a_range_name_cannot_inject_a_shell_command(self):
         # 15 bytes, exactly tmux's limit, and enough to escape hand-written
-        # single quotes: `;>/tmp/hslz;` truncates a file into existence. It
+        # single quotes: `;>/tmp/zNNN;` truncates a file into existence. It
         # must arrive as one literal argument instead.
-        marker = pathlib.Path("/tmp/hslz")
-        marker.unlink(missing_ok=True)
+        #
+        # The limit leaves no room for a temp directory, so the marker has to
+        # live at a short absolute path. Claim one that does not exist rather
+        # than clearing a fixed name, which would delete a stranger's file and
+        # make two concurrent runs report each other's result.
+        marker = None
+        for suffix in range(1000):
+            candidate = pathlib.Path(f"/tmp/z{suffix:03d}")
+            if not candidate.exists():
+                marker = candidate
+                break
+        self.assertIsNotNone(marker, "no free /tmp/zNNN marker path")
         self.addCleanup(marker.unlink, True)
-        evil = "a';>/tmp/hslz;'"
+        evil = f"a';>{marker};'"
         self.assertEqual(len(evil), 15)
         self.hook()
         with self.session(
@@ -153,27 +163,41 @@ class StatusClickTests(MouseIntegrationBase):
                     self.assertEqual(lines, [f"left|{evil}|2|0"])
 
     def test_a_noisy_failing_hook_draws_nothing(self):
-        self.hook("#!/bin/sh\necho NOISE-MARKER\nexit 7\n")
+        # The hook records that it ran before making any noise. Without that
+        # line the assertions below would also hold for a hook that never
+        # started, which is the opposite of what this is checking.
+        self.hook(
+            "#!/bin/sh\n"
+            f"printf 'ran\\n' >> '{self.hook_log}'\n"
+            "echo NOISE-MARKER\n"
+            "exit 7\n"
+        )
         with self.session() as term:
             term.click(BUTTON_COL, STATUS_ROW)
-            term.wait_for_lines(self.hook_log, 1, timeout=3.0)
+            lines = term.wait_for_lines(self.hook_log, 1)
             drawn = term.drawn()
+        self.assertEqual(lines, ["ran"], "the hook never ran")
         self.assertNotIn(b"NOISE-MARKER", drawn)
         self.assertNotIn(b"returned 7", drawn)
 
     def test_a_slow_hook_does_not_block_the_command_queue(self):
-        # -b is what keeps this true. Without it the first click would hold the
-        # queue for the whole sleep and the second would run only afterwards.
+        # -b is the whole point. The hook announces itself and only then
+        # sleeps, so the question is how far apart the two announcements land,
+        # not how long the pair takes overall.
+        #
+        # Backgrounded, both lines appear as fast as the clicks arrive. Run in
+        # the foreground the first hook holds tmux's command queue for its
+        # whole sleep, so the second click is not even dispatched until three
+        # seconds later and the deadline below expires with one line.
         self.hook(
             "#!/bin/sh\n"
-            f"sleep 3\nprintf '%s\\n' \"$1\" >> '{self.hook_log}'\n"
+            f"printf '%s\\n' \"$1\" >> '{self.hook_log}'\n"
+            "sleep 3\n"
         )
         with self.session() as term:
             term.click(BUTTON_COL, STATUS_ROW)
             term.click(BUTTON_COL, STATUS_ROW)
-            # Both must be in flight at once: two sequential three-second
-            # sleeps could not produce both lines inside this deadline.
-            lines = term.wait_for_lines(self.hook_log, 2, timeout=5.5)
+            lines = term.wait_for_lines(self.hook_log, 2, timeout=2.0)
         self.assertEqual(lines, ["left", "left"])
 
     def test_rapid_clicks_all_reach_the_hook(self):
@@ -196,7 +220,9 @@ class PanePassThroughTests(MouseIntegrationBase):
             term.motion(12, 6)
             term.drag(10, PANE_ROW, 14, 7)
             term.wheel(10, PANE_ROW)
-            term.wait_for_lines(self.app_log, 7, timeout=6.0)
+            # Wait on the last event sent, not on a line count: two events
+            # can share one os.read() line in the app log.
+            term.wait_for_text(self.app_log, r"\x1b[<64;10;5M", timeout=6.0)
         blob = self.received()
         self.assertIn(r"\x1b[<0;10;5M", blob)
         self.assertIn(r"\x1b[<0;10;5m", blob)
@@ -209,7 +235,7 @@ class PanePassThroughTests(MouseIntegrationBase):
         with self.session(mode=1000) as term:
             term.click(10, PANE_ROW)
             term.wheel(10, PANE_ROW)
-            term.wait_for_lines(self.app_log, 3, timeout=6.0)
+            term.wait_for_text(self.app_log, r"\x1b[<64;10;5M", timeout=6.0)
         blob = self.received()
         self.assertIn(r"\x1b[<0;10;5M", blob)
         self.assertIn(r"\x1b[<0;10;5m", blob)
@@ -225,7 +251,7 @@ class PanePassThroughTests(MouseIntegrationBase):
             extra_options=[("status-position", "top")]
         ) as term:
             term.click(10, PANE_ROW)
-            term.wait_for_lines(self.app_log, 2, timeout=6.0)
+            term.wait_for_text(self.app_log, r"\x1b[<0;10;4M", timeout=6.0)
         self.assertIn(r"\x1b[<0;10;4M", self.received())
 
 
@@ -234,9 +260,17 @@ class PanePassThroughTests(MouseIntegrationBase):
 class RootTableGuardTests(MouseIntegrationBase):
     def test_pass_through_breaks_without_the_root_table_clear(self):
         # Guards tmux/base.conf's `unbind-key -a -T root`. Removing that line
-        # brings tmux's defaults back; C-MouseDown1Pane then runs swap-pane
+        # brings tmux's defaults back; M-MouseDown3Pane then opens a menu
         # instead of forwarding, so the application stops seeing what the
         # terminal sent.
+        #
+        # The discriminator has to exist on every tmux this feature supports
+        # and must have no forwarding branch. C-MouseDown1Pane has neither
+        # property: it arrived in 3.7, so on 3.4 through 3.6 the event would
+        # pass through and the guard would fail. DoubleClick1Pane is worse —
+        # it forwards with send-keys -M whenever mouse_any_flag is set, which
+        # is exactly this case. M-MouseDown3Pane is present in 3.6b and 3.7b
+        # and consumes the event in both, which was measured.
         original = (ROOT / "tmux/base.conf").read_text()
         self.assertIn("unbind-key -a -T root", original,
                       "base.conf must still clear the root table")
@@ -246,24 +280,27 @@ class RootTableGuardTests(MouseIntegrationBase):
         self.hook()
         env = self.runtime_env()
         env["HSL_TEST_BASE_CONF"] = str(patched)
+        event = r"\x1b[<10;10;5M"
         with HslPty(RUNTIME, env) as term:
-            term.click(10, PANE_ROW, button=16)   # C-MouseDown1Pane (Ctrl+Click)
-            term.wait_for_lines(self.app_log, 2, timeout=4.0)
+            term.click(10, PANE_ROW, button=10)   # M-MouseDown3Pane (Alt+right)
+            # Expected to time out: the default binding swallows the event.
+            broken_arrived = term.wait_for_text(self.app_log, event, timeout=4.0)
             broken = self.received()
 
-        # Sanity: with the clear in place the same events do arrive.
+        # Sanity: with the clear in place the same event does arrive.
         self.setUp()
         self.hook()
         with self.session() as term:
-            term.click(10, PANE_ROW, button=16)
-            term.wait_for_lines(self.app_log, 2, timeout=4.0)
+            term.click(10, PANE_ROW, button=10)
+            intact_arrived = term.wait_for_text(self.app_log, event, timeout=4.0)
             intact = self.received()
 
-        self.assertIn(r"\x1b[<16;10;5M", intact,
-                      "the cleared root table must forward the events")
-        self.assertNotEqual(
-            broken.count(r"\x1b[<16;10;5M"), intact.count(r"\x1b[<16;10;5M"),
-            "removing the root-table clear must change what the app receives",
-        )
+        self.assertTrue(intact_arrived,
+                        "the cleared root table must forward the event")
+        self.assertIn(event, intact)
+        self.assertFalse(broken_arrived,
+                         "without the clear tmux's default binding must "
+                         "consume the event")
+        self.assertNotIn(event, broken)
 
 

@@ -277,7 +277,9 @@ apply_status_options() {
 # `range=user|p` is accepted on 3.3 too, where user ranges do not exist.
 # Version parsing is the only test that discriminates, so it is used here and
 # nowhere else. Anything unparseable counts as new enough: those are builds
-# like `next-3.9`, and refusing them would silently ignore an explicit opt-in.
+# whose version string this cannot read at all, and refusing them would
+# silently ignore an explicit opt-in. `next-3.9` is not such a case: the
+# expression below reads 3 and 9 out of it and compares them normally.
 mouse_ranges_supported() {
     version=$("$TMUX_BIN" -V 2>/dev/null) || return 0
     numbers=$(printf '%s' "$version" |

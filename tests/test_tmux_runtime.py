@@ -538,6 +538,20 @@ class TmuxRuntimeTests(unittest.TestCase):
     def bind_calls(self, argv):
         return [a for a in argv if "bind-key" in a]
 
+    def hook_option_calls(self, argv):
+        return [a for a in argv if "set-option" in a and "@hsl_on_click" in a]
+
+    def assert_no_mouse_changes(self, argv):
+        """Nothing mouse-specific was touched.
+
+        Checking only the mouse option and the bindings would still pass if
+        @hsl_on_click were set before the guard that declined, so the user
+        option is part of the contract too.
+        """
+        self.assertEqual(self.bind_calls(argv), [])
+        self.assertEqual(self.mouse_option_calls(argv), [])
+        self.assertEqual(self.hook_option_calls(argv), [])
+
     def test_wires_exactly_four_status_bindings(self):
         result, argv = self.wire()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -573,22 +587,19 @@ class TmuxRuntimeTests(unittest.TestCase):
         result, argv = self.wire(hook=None)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("mouse clicks stay off", result.stderr)
-        self.assertEqual(self.bind_calls(argv), [])
-        self.assertEqual(self.mouse_option_calls(argv), [])
+        self.assert_no_mouse_changes(argv)
 
     def test_leaves_the_mouse_off_when_the_hook_is_not_executable(self):
         result, argv = self.wire(executable=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("is not executable", result.stderr)
-        self.assertEqual(self.bind_calls(argv), [])
-        self.assertEqual(self.mouse_option_calls(argv), [])
+        self.assert_no_mouse_changes(argv)
 
     def test_leaves_the_mouse_off_when_the_config_dir_is_unknown(self):
         result, argv = self.wire(config_dir=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("plugin config dir is unknown", result.stderr)
-        self.assertEqual(self.bind_calls(argv), [])
-        self.assertEqual(self.mouse_option_calls(argv), [])
+        self.assert_no_mouse_changes(argv)
 
     def test_leaves_the_mouse_off_below_tmux_3_4(self):
         for version in ("tmux 3.3a", "tmux 3.0", "tmux 2.9", "tmux 1.8"):
@@ -597,8 +608,7 @@ class TmuxRuntimeTests(unittest.TestCase):
                 result, argv = self.wire(version=version)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("tmux 3.4", result.stderr)
-                self.assertEqual(self.bind_calls(argv), [])
-                self.assertEqual(self.mouse_option_calls(argv), [])
+                self.assert_no_mouse_changes(argv)
                 # Ordinary status options are unrelated and still apply.
                 self.assertTrue(
                     [a for a in argv

@@ -175,5 +175,22 @@ class HslPty:
             self._drain(0.2)
         return lines
 
+    def wait_for_text(self, path, needle, timeout=10.0):
+        """Poll until `path` contains `needle`.
+
+        Prefer this over wait_for_lines when waiting on the inner app's log:
+        a line there is one os.read(), not one event, so two events arriving
+        together share a line and a count-based wait sits out its whole
+        deadline for output that already arrived.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if os.path.exists(path):
+                with open(path) as stream:
+                    if needle in stream.read():
+                        return True
+            self._drain(0.2)
+        return False
+
     def drawn(self):
         return bytes(self._buffer)
