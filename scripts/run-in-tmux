@@ -15,6 +15,9 @@ BASE_CONF=$root/tmux/base.conf
 # unset value is legitimate: it means no options, exactly like an absent
 # [statusline] section.
 STATUS_OPTIONS=${HSL_STATUS_OPTIONS:-}
+# Set before apply_status_options runs so an absent options file leaves the
+# feature off rather than unset. apply_mouse_clicks reads this.
+MOUSE_CLICKS=false
 remove_status_options() {
     [ -n "$STATUS_OPTIONS" ] || return 0
     rm -f "$STATUS_OPTIONS"
@@ -218,24 +221,43 @@ apply_status_options() {
         printf '%s\n' 'hsl: invalid hsl-config output' >&2
         return 2
     }
-    count=$(sed -n '2p' "$STATUS_OPTIONS")
+    # Line 1 is `enabled`, already consumed by bin/hsl-internal; line 2 is
+    # `mouse_clicks`; the count is line 3 and the pairs start at line 4.
+    MOUSE_CLICKS=$(sed -n '2p' "$STATUS_OPTIONS") || {
+        printf '%s\n' 'hsl: invalid hsl-config output' >&2
+        return 2
+    }
+    case $MOUSE_CLICKS in
+        true|false) ;;
+        *)
+            printf '%s\n' 'hsl: invalid hsl-config output' >&2
+            return 2
+            ;;
+    esac
+    count=$(sed -n '3p' "$STATUS_OPTIONS") || {
+        printf '%s\n' 'hsl: invalid hsl-config output' >&2
+        return 2
+    }
     case ${count:-x} in
         ''|*[!0-9]*)
             printf '%s\n' 'hsl: invalid hsl-config output' >&2
             return 2
             ;;
     esac
-    lines=$(wc -l <"$STATUS_OPTIONS")
-    [ "$lines" -eq $((2 + count * 2)) ] || {
+    lines=$(wc -l <"$STATUS_OPTIONS") || {
+        printf '%s\n' 'hsl: invalid hsl-config output' >&2
+        return 2
+    }
+    [ "$lines" -eq $((3 + count * 2)) ] || {
         printf '%s\n' 'hsl: invalid hsl-config output' >&2
         return 2
     }
     index=0
     while [ "$index" -lt "$count" ]; do
-        name=$(sed -n "$((3 + index * 2))p" "$STATUS_OPTIONS")
+        name=$(sed -n "$((4 + index * 2))p" "$STATUS_OPTIONS") || return 2
         # Command substitution strips the line terminator and nothing else, so
         # a value's leading and trailing spaces survive.
-        value=$(sed -n "$((4 + index * 2))p" "$STATUS_OPTIONS")
+        value=$(sed -n "$((5 + index * 2))p" "$STATUS_OPTIONS") || return 2
         case $name in
             window-status-*) scope=-gw ;;
             *) scope=-g ;;

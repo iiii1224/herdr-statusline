@@ -144,7 +144,7 @@ class TmuxRuntimeTests(unittest.TestCase):
             }
         )
 
-    def run_runtime(self, *args, options=None, **extra_env):
+    def run_runtime(self, *args, options=None, mouse=False, **extra_env):
         env = self.env.copy()
         # A None value removes the variable, which no plain update() can do.
         for key, value in extra_env.items():
@@ -154,10 +154,48 @@ class TmuxRuntimeTests(unittest.TestCase):
                 env[key] = value
         if "HSL_STATUS_OPTIONS" not in extra_env:
             pairs = DEFAULT_OPTIONS if options is None else options
-            env["HSL_STATUS_OPTIONS"] = str(write_protocol(self.base, pairs))
+            env["HSL_STATUS_OPTIONS"] = str(
+                write_protocol(self.base, pairs, mouse_clicks=mouse)
+            )
         return subprocess.run(
             ["sh", str(RUNTIME), *args], cwd=ROOT, env=env, text=True, capture_output=True
         )
+
+    def test_still_applies_status_options_after_the_protocol_shift(self):
+        result = self.run_runtime("--session", "x")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        applied = [
+            args[args.index("set-option") + 1 :]
+            for args in self.tmux_argv()
+            if "set-option" in args
+        ]
+        self.assertIn(["-g", "status-interval", "3"], applied)
+        self.assertIn(["-g", "status-position", "top"], applied)
+
+    def test_rejects_a_protocol_whose_mouse_clicks_line_is_not_boolean(self):
+        broken = self.base / "broken-options"
+        broken.write_text("true\nmaybe\n0\n")
+        result = self.run_runtime("--session", "x", HSL_STATUS_OPTIONS=str(broken))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("invalid hsl-config output", result.stderr)
+
+    def test_rejects_an_old_writer_protocol(self):
+        # Old writer, new runner. Line 2 of the old format is the option count,
+        # so the boolean check rejects it before the line count is reached.
+        old = self.base / "old-options"
+        old.write_text("true\n1\nstatus-interval\n3\n")
+        result = self.run_runtime("--session", "x", HSL_STATUS_OPTIONS=str(old))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("invalid hsl-config output", result.stderr)
+
+    def test_rejects_a_protocol_whose_pairs_sit_at_the_old_offsets(self):
+        # The other skew direction: a payload shaped for the old reader must
+        # be refused rather than applied one line off.
+        skewed = self.base / "skewed-options"
+        skewed.write_text("true\nfalse\n1\nstatus-interval\n3\nstray\n")
+        result = self.run_runtime("--session", "x", HSL_STATUS_OPTIONS=str(skewed))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("invalid hsl-config output", result.stderr)
 
     def tmux_calls(self):
         return [json.loads(line) for line in self.tmux_log.read_text().splitlines()]
