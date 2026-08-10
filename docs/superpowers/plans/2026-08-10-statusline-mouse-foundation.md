@@ -18,7 +18,7 @@
 - **pane 系の binding は追加しない。** root が空なら tmux が自動で転送する（仕様 F4）。
 - **`src/config.rs` の `option_name` allowlist は変更しない。** `[statusline]` から到達できるのは `status` / `status-*` / `window-status-*` のみを維持する。
 - **`MouseDown2Status` と `MouseDown1StatusDefault` は配線しない。**
-- 既存のベースライン: `cargo test` は 44 テスト全通過、全 shell スクリプトは `sh -n` 通過。
+- 既存のベースライン: `cargo test` 44 件全通過、`python3 -m unittest discover -s tests` 106 件全通過、全 shell スクリプトが `sh -n` 通過。**このプロジェクトに pytest は入っていない。テストは unittest で走らせる**（CI も `python3 -m unittest discover -s tests -v`）。
 - コミットメッセージ末尾には `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>` を付ける。
 
 ---
@@ -192,7 +192,7 @@ def write_protocol(base, pairs, enabled=True, mouse_clicks=False):
 
 - [ ] **Step 6: Python テストが通ることを確認**
 
-Run: `python3 -m pytest tests/test_hsl_internal.py -q`
+Run: `python3 -m unittest tests.test_hsl_internal -v`
 Expected: PASS。落ちる場合は期待値の行順を確認する（`enabled` → `mouse_clicks` → count）。
 
 - [ ] **Step 7: コミット**
@@ -265,7 +265,7 @@ EOF
 
 - [ ] **Step 2: テストが失敗することを確認**
 
-Run: `python3 -m pytest tests/test_tmux_runtime.py -q -k "protocol"`
+Run: `python3 -m unittest tests.test_tmux_runtime -k protocol -v`
 Expected: FAIL。旧オフセットのままなので `status-interval` の値がずれ、
 `maybe` は count として読まれて別のエラーになる。
 
@@ -331,7 +331,7 @@ MOUSE_CLICKS=false
 
 - [ ] **Step 4: テストが通ることを確認**
 
-Run: `python3 -m pytest tests/test_tmux_runtime.py -q`
+Run: `python3 -m unittest tests.test_tmux_runtime -v`
 Expected: PASS（全件）。既存テストが落ちる場合はオフセットを見直す。
 
 - [ ] **Step 5: 構文チェック**
@@ -395,7 +395,7 @@ root テーブルの観測を足す。まず `SMOKE_HERDR` の記録項目を増
 
 - [ ] **Step 2: テストが失敗することを確認**
 
-Run: `python3 -m pytest tests/test_tmux_runtime.py -q -k "root_key"`
+Run: `python3 -m unittest tests.test_tmux_runtime -k root_key -v`
 Expected: FAIL。24 本の binding が列挙される。
 
 - [ ] **Step 3: 実装する**
@@ -415,7 +415,7 @@ unbind-key -a -T root
 
 - [ ] **Step 4: テストが通ることを確認**
 
-Run: `python3 -m pytest tests/test_tmux_runtime.py -q`
+Run: `python3 -m unittest tests.test_tmux_runtime -v`
 Expected: PASS（全件）
 
 - [ ] **Step 5: 手で裏を取る**
@@ -517,7 +517,7 @@ if args == ['-V']:
 
 - [ ] **Step 3: テストが失敗することを確認**
 
-Run: `python3 -m pytest tests/test_tmux_runtime.py -q -k "tmux_3_4"`
+Run: `python3 -m unittest tests.test_tmux_runtime -k tmux_3_4 -v`
 Expected: FAIL。まだ `mouse` を触るコードが無いので両方とも空 argv になる。
 
 - [ ] **Step 4: 実装する**
@@ -677,7 +677,7 @@ if os.environ.get('HSL_TEST_TMUX_REJECT', '') in args and (
 
 - [ ] **Step 2: テストが失敗することを確認**
 
-Run: `python3 -m pytest tests/test_tmux_runtime.py -q -k "wire or hook or config_dir or fails_closed"`
+Run: `python3 -m unittest tests.test_tmux_runtime -k wire -k hook -k config_dir -k fails_closed -v`
 Expected: FAIL。まだ `apply_mouse_clicks` が無い。
 
 - [ ] **Step 3: 実装する**
@@ -758,7 +758,7 @@ fi
 
 - [ ] **Step 4: テストが通ることを確認**
 
-Run: `python3 -m pytest tests/test_tmux_runtime.py -q`
+Run: `python3 -m unittest tests.test_tmux_runtime -v`
 Expected: PASS（全件）
 
 - [ ] **Step 5: 構文チェックとコミット**
@@ -1070,7 +1070,7 @@ class StatusClickTests(unittest.TestCase):
 
 - [ ] **Step 3: テストが失敗することを確認**
 
-Run: `python3 -m pytest tests/test_tmux_mouse.py -q`
+Run: `python3 -m unittest tests.test_tmux_mouse -v`
 Expected: FAIL。`tests/mouse_pty.py` の import か、フックが呼ばれず空の
 `lines()` になる。
 
@@ -1090,7 +1090,7 @@ tmux -L hsl-mouse-test display-message -p '#{status-format[0]}'
 
 - [ ] **Step 5: テストが通ることを確認**
 
-Run: `python3 -m pytest tests/test_tmux_mouse.py -q`
+Run: `python3 -m unittest tests.test_tmux_mouse -v`
 Expected: PASS（4 件）
 
 - [ ] **Step 6: コミット**
@@ -1211,7 +1211,7 @@ class PanePassThroughTests(unittest.TestCase):
 
 - [ ] **Step 2: テストが失敗することを確認**
 
-Run: `python3 -m pytest tests/test_tmux_mouse.py -q -k "PanePassThrough"`
+Run: `python3 -m unittest tests.test_tmux_mouse -k PanePassThrough -v`
 Expected: 最初は `inner_app_command` の import エラーか、`received()` が空になる。
 
 - [ ] **Step 3: フィクスチャの不足を埋める**
@@ -1228,7 +1228,7 @@ print(INNER_APP.replace('{mode}','1000')[:200])
 
 - [ ] **Step 4: テストが通ることを確認**
 
-Run: `python3 -m pytest tests/test_tmux_mouse.py -q`
+Run: `python3 -m unittest tests.test_tmux_mouse -v`
 Expected: PASS（全件）
 
 - [ ] **Step 5: コミット**
@@ -1352,7 +1352,7 @@ Two constraints shape the layout:
 
 ```bash
 cargo test --quiet
-python3 -m pytest tests/ -q
+python3 -m unittest discover -s tests
 ```
 
 Expected: すべて PASS。`default-config.toml` は TOML なので `sh -n` の対象外。
