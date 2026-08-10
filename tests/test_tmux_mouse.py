@@ -184,3 +184,86 @@ class StatusClickTests(MouseIntegrationBase):
             lines = term.wait_for_lines(self.hook_log, 6)
         self.assertEqual(len(lines), 6)
         self.assertEqual(set(lines), {"left|btn|2|0"})
+
+
+@unittest.skipUnless(TMUX, "tmux is not installed")
+@unittest.skipUnless(tmux_at_least_3_4(), "needs tmux 3.4 or newer")
+class PanePassThroughTests(MouseIntegrationBase):
+    def test_forwards_clicks_motion_drag_and_wheel_in_1003(self):
+        self.hook()
+        with self.session(mode=1003) as term:
+            term.click(10, PANE_ROW)
+            term.motion(12, 6)
+            term.drag(10, PANE_ROW, 14, 7)
+            term.wheel(10, PANE_ROW)
+            term.wait_for_lines(self.app_log, 7, timeout=6.0)
+        blob = self.received()
+        self.assertIn(r"\x1b[<0;10;5M", blob)
+        self.assertIn(r"\x1b[<0;10;5m", blob)
+        self.assertIn(r"\x1b[<35;12;6M", blob)   # motion, 1003 only
+        self.assertIn(r"\x1b[<32;14;7M", blob)   # drag, button 1 held
+        self.assertIn(r"\x1b[<64;10;5M", blob)   # wheel up
+
+    def test_forwards_clicks_and_wheel_in_1000(self):
+        self.hook()
+        with self.session(mode=1000) as term:
+            term.click(10, PANE_ROW)
+            term.wheel(10, PANE_ROW)
+            term.wait_for_lines(self.app_log, 3, timeout=6.0)
+        blob = self.received()
+        self.assertIn(r"\x1b[<0;10;5M", blob)
+        self.assertIn(r"\x1b[<0;10;5m", blob)
+        self.assertIn(r"\x1b[<64;10;5M", blob)
+
+    def test_translates_coordinates_to_pane_relative(self):
+        # tmux hands the application pane-relative rows, so this is not a
+        # byte-for-byte relay. status-position is in the allowlist, so a user
+        # really can move the bar to the top; the pane then starts one row
+        # down and terminal row 5 must arrive as row 4.
+        self.hook()
+        with self.session(
+            extra_options=[("status-position", "top")]
+        ) as term:
+            term.click(10, PANE_ROW)
+            term.wait_for_lines(self.app_log, 2, timeout=6.0)
+        self.assertIn(r"\x1b[<0;10;4M", self.received())
+
+
+@unittest.skipUnless(TMUX, "tmux is not installed")
+@unittest.skipUnless(tmux_at_least_3_4(), "needs tmux 3.4 or newer")
+class RootTableGuardTests(MouseIntegrationBase):
+    def test_pass_through_breaks_without_the_root_table_clear(self):
+        # Guards tmux/base.conf's `unbind-key -a -T root`. Removing that line
+        # brings tmux's defaults back; C-MouseDown1Pane then runs swap-pane
+        # instead of forwarding, so the application stops seeing what the
+        # terminal sent.
+        original = (ROOT / "tmux/base.conf").read_text()
+        self.assertIn("unbind-key -a -T root", original,
+                      "base.conf must still clear the root table")
+        patched = self.base / "base-without-root-clear.conf"
+        patched.write_text(original.replace("unbind-key -a -T root\n", ""))
+
+        self.hook()
+        env = self.runtime_env()
+        env["HSL_TEST_BASE_CONF"] = str(patched)
+        with HslPty(RUNTIME, env) as term:
+            term.click(10, PANE_ROW, button=16)   # C-MouseDown1Pane (Ctrl+Click)
+            term.wait_for_lines(self.app_log, 2, timeout=4.0)
+            broken = self.received()
+
+        # Sanity: with the clear in place the same events do arrive.
+        self.setUp()
+        self.hook()
+        with self.session() as term:
+            term.click(10, PANE_ROW, button=16)
+            term.wait_for_lines(self.app_log, 2, timeout=4.0)
+            intact = self.received()
+
+        self.assertIn(r"\x1b[<16;10;5M", intact,
+                      "the cleared root table must forward the events")
+        self.assertNotEqual(
+            broken.count(r"\x1b[<16;10;5M"), intact.count(r"\x1b[<16;10;5M"),
+            "removing the root-table clear must change what the app receives",
+        )
+
+
