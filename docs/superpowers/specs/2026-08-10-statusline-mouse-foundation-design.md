@@ -40,7 +40,7 @@ Git 操作・情報展開などの操作面として利用できるようにな�
   btm 起動、メディア操作など）。**別リポジトリが `on-click.sh` として実装する。**
 - `#[range=user|X]` をステータスラインへ書くこと自体。これは既存の
   `status_format_N` / `status_left` / `status_right` で既に可能であり、基盤の変更を要しない。
-- pane 領域のマウス処理。tmux が自動で素通しするため配線不要（§7 で実測を示す）。
+- pane 領域のマウス処理。root キーテーブルを空にすれば tmux が自動で素通しするため、転送 binding は不要（§3 F4・F5 で実測を示す）。
 - tmux 側の当たり判定オフセット（§8）の補正。
 
 ---
@@ -54,12 +54,29 @@ Git 操作・情報展開などの操作面として利用できるようにな�
 | --- | --- | --- |
 | F1 | `#[range=user\|X]` のクリックは `MouseDown1Status` を発火し、`#{mouse_status_range}` に `X` が入る | 任意領域をボタン化できる。ディスパッチのキーは range 名 |
 | F2 | `run-shell` はフォーマットを展開する（`#{mouse_x}` 等がそのまま使える） | フックへ引数を渡せる |
-| F3 | `mouse on` + `unbind-key -a` で、**転送 binding が無くても** pane のマウスイベントはアプリへ素通しされる | pane 転送 binding は不要 |
-| F4 | F3 は 1000（クリックのみ）・1003（全イベント追跡）の双方で成立し、モーション `\x1b[<35;12;6M`・ドラッグ・ホイールもバイト単位で透過する | herdr が使う 1002/1003 が壊れない |
-| F5 | herdr バイナリは `?1002h` / `?1003h` を含む（モーション追跡を使う） | F4 の確認が必須だった。結果は良好 |
-| F6 | 右クリック（`MouseDown3Status`）とホイールも user range 上で range 名付きで発火する | left / right / wheel の 4 系統を配線する根拠 |
-| F7 | tmux に `MouseMove` binding は存在しない | status line では hover を実装できない（§8） |
-| F8 | user range の当たり判定は表示テキストより右端が 1 カラム広い。`range=left` / `range=right` の内側にネストすると左端も 1 カラムずれる | ドキュメント化のみ（§8） |
+| F3 | **`unbind-key -a` は prefix テーブルしか消さない。** `tmux/base.conf` の実行後も root テーブルには tmux 標準のマウス binding が 24 本残っている（実測: `list-keys -T root` が 24 行） | `mouse off` の現在は不活性だが、`mouse on` にした瞬間すべて有効化される。§5.3 の根拠 |
+| F4 | root テーブルを `unbind-key -a -T root` で空（0 本）にしたうえで `mouse on` にすると、**転送 binding が無くても** pane のマウスイベントはアプリへ素通しされる | pane 転送 binding は不要。ただし root を空にすることが前提 |
+| F5 | F4 は 1000（クリックのみ）・1003（全イベント追跡）の双方で成立し、モーション `\x1b[<35;12;6M`・ドラッグ・ホイールもバイト単位で透過する | herdr が使う 1002/1003 が壊れない |
+| F6 | herdr バイナリは `?1002h` / `?1003h` を含む（モーション追跡を使う） | F5 の確認が必須だった。結果は良好 |
+| F7 | 右クリック（`MouseDown3Status`）とホイールも user range 上で range 名付きで発火する | left / right / wheel の 4 系統を配線する根拠 |
+| F8 | tmux に `MouseMove` binding は存在しない | status line では hover を実装できない（§8） |
+| F9 | user range の当たり判定は表示テキストより右端が 1 カラム広い。`range=left` / `range=right` の内側にネストすると左端も 1 カラムずれる | ドキュメント化のみ（§8） |
+| F10 | root を空にして 4 本だけ張った最終構成で、フックは `ARGC=4 button=[left] range=[btn_git] x=[6] line=[0]` を受け取り、同時に pane 側の透過も維持される。フックのパスに空白を含んでも `shell_quote` 埋め込みで正しく動く | §5.5 の配線がそのまま動く実証 |
+| F11 | range の外（`MouseDown1StatusDefault`）を左クリックしても、当該 binding を張らない限り何も起きない | フックに空の range が渡ることはない（§6） |
+
+### F3 の重要性
+
+tmux 標準の root マウス binding には、`mouse on` の下で herdr の操作を奪うものが含まれる。
+
+- `DoubleClick1Pane` / `TripleClick1Pane` → `copy-mode` で単語・行選択
+- `MouseDown3Pane` → tmux のコンテキストメニュー
+- `WheelUpPane` → `copy-mode -e`
+- `MouseDown1Control9` → **kill-pane 確認メニュー**
+- `MouseDrag1Border` → ペインリサイズ
+- `MouseDown1ScrollbarUp` / `Down` / `MouseDrag1ScrollbarSlider`
+
+これらは `#{mouse_any_flag}` が 0 のとき（＝herdr がマウスモードを要求していない瞬間）に
+発火する分岐を持つ。root を空にしない限り、`mouse on` は herdr の入力を壊す。
 
 ---
 
@@ -79,7 +96,7 @@ status line クリック
 ```
 
 pane クリックは配線しない。tmux がキーテーブルに一致を見つけられず、かつアプリが
-マウスモードを有効化している場合、自動的に素通しする（F3・F4）。
+マウスモードを有効化している場合、自動的に素通しする（F4・F5）。root が空であることが前提で、それは §5.3 で base.conf により保証される。
 
 ### 三層構造
 
@@ -149,11 +166,31 @@ producer（`hsl-config`）と consumer（`run-in-tmux`）は常に同一イン�
 `bin/hsl-internal` を変更する必要はないが、行 1 の意味を変えていないことを回帰テストで
 担保する（§9 テスト 10）。
 
-### 5.3 `tmux/base.conf` — 変更しない
+### 5.3 `tmux/base.conf` — root キーテーブルを空にする
 
-`set-option -g mouse off` を残す。「マウス無効が既定」という不変条件を静的ファイルに
-保持し、有効化は `run-in-tmux` による動的な上書きとして扱う。これにより
-`mouse_clicks = false`（既定）の経路は現行とバイト単位で同一の tmux 設定になる。
+`set-option -g mouse off` は残す。「マウス無効が既定」という不変条件を静的ファイルに
+保持し、有効化は `run-in-tmux` による動的な上書きとして扱う。
+
+加えて **`unbind-key -a -T root` を 1 行追加する。**
+
+```tmux
+unbind-key -a
+unbind-key -a -T root
+```
+
+理由（F3）: 既存の `unbind-key -a` は **prefix テーブルしか消しておらず**、root には
+tmux 標準のマウス binding が 24 本残っている。`mouse off` の現在は不活性だが、
+`mouse_clicks` を有効にした瞬間、copy-mode・コンテキストメニュー・kill-pane 確認
+メニュー・ペインリサイズなどが herdr の操作を奪う。
+
+**この 1 行を条件分岐側ではなく base.conf に置く理由:**
+
+1. base.conf の既存コメントが表明している「tmux はキーを一切持たない」という意図を、
+   実際に成立させる。現状はその表明が事実に反している
+2. 24 本はすべてマウス binding であり、`mouse off` の下では発火しえない。よって
+   `mouse_clicks = false` の既存経路に**挙動変化はない**
+3. 条件分岐側に置くと「クリア前に `mouse on` が適用される」順序ハザードが生まれる。
+   静的ファイルで先に空にしておけば構造的に起こりえない
 
 ### 5.4 `scripts/run-in-tmux` — プロトコル読み出しの更新
 
@@ -230,7 +267,9 @@ mouse clicks stay off\n' "$hook" >&2
   `$HERDR_PLUGIN_CONFIG_DIR` が渡るかどうかに依存しない。
 - **中クリック（`MouseDown2Status`）は配線しない。** 端末では伝統的にペーストに
   割り当てられており、奪うと利用者を驚かせる。
-- **pane 系の binding は一切追加しない**（F3・F4）。
+- **pane 系の binding は一切追加しない**（F4・F5）。root が空である前提が §5.3 で
+  base.conf により保証されているため、素通しが成立する。
+- **`MouseDown1StatusDefault` も配線しない。** range 外のクリックは無反応でよい（F11）。
 - 失敗時は `return 2` とし、呼び出し側は `apply_status_options` と同じく `exit 2` する。
   フック不在・config dir 不明は失敗ではなく `return 0`（警告のみ、起動継続）。
 
@@ -277,7 +316,7 @@ fi
 | パス | `$HERDR_PLUGIN_CONFIG_DIR/on-click.sh`（固定）。別リポジトリまたはユーザーが所有 |
 | 起動条件 | `mouse_clicks = true` かつ当該パスが実行可能（`[ -x ]`） |
 | `$1` button | `left` / `right` / `wheelup` / `wheeldown` のいずれか |
-| `$2` range | `#{mouse_status_range}` の値。user range なら宣言した `X`、window list なら `window`、範囲外なら空文字列 |
+| `$2` range | `#{mouse_status_range}` の値。user range なら宣言した `X`、window list なら `window`。**空文字列にはならない**（range 外は `StatusDefault` が発火し、それは配線しないため。F11） |
 | `$3` x | `#{mouse_x}`（0 始まり） |
 | `$4` line | `#{mouse_status_line}`（0 始まりの status 行番号） |
 | 環境 | `$TMUX` が設定されているため `tmux display-popup` 等がそのまま使える。tmux グローバル環境の `HERDR_SESSION` / `HERDR_PLUGIN_CONFIG_DIR` も利用可能 |
@@ -305,9 +344,11 @@ fi
 
 | リスク | 緩和 |
 | --- | --- |
-| `mouse on` が herdr のマウス入力を壊す | F3・F4 で 1000/1003・モーション・ドラッグ・ホイールの透過を実測確認。加えて回帰テストを課す（§9） |
+| **tmux 標準の root マウス binding 24 本が `mouse on` で有効化され、copy-mode・コンテキストメニュー・kill-pane メニュー・ペインリサイズが herdr の操作を奪う**（F3） | base.conf に `unbind-key -a -T root` を追加し、root を構造的に空に保つ（§5.3）。テスト 7 で root が 4 本ちょうどであることを検証 |
+| `mouse on` が herdr のマウス入力を壊す | F4・F5 で 1000/1003・モーション・ドラッグ・ホイールの透過を実測確認。加えて回帰テストを課す（§9） |
 | status 行のクリックが herdr に届かなくなる | status 行は pane の外であり、現状でも herdr には届いていない。挙動変化なし |
 | フック不在で無反応なバーになる | フックが実行可能でなければ `mouse on` 自体を適用しない |
+| base.conf 変更が既存ユーザーの挙動を変える | 消える 24 本はすべてマウス binding で、`mouse off` の下では発火しえない。テスト 6 で `mouse_clicks = false` 時の挙動不変を検証 |
 
 ---
 
@@ -315,9 +356,9 @@ fi
 
 | 制約 | 内容 | 扱い |
 | --- | --- | --- |
-| hover 不可 | tmux に `MouseMove` binding が無い（F7） | 押せることは静的な見た目で示す。ドキュメント化 |
+| hover 不可 | tmux に `MouseMove` binding が無い（F8） | 押せることは静的な見た目で示す。ドキュメント化 |
 | range 名 15 バイト上限 | tmux の仕様 | ドキュメント化 |
-| 当たり判定の 1 カラムずれ | 右端が 1 カラム広い。`range=left` / `range=right` の内側では左端も +1（F8） | tmux 側の挙動。SKILL.md で回避策（`status_format_N` を自前定義）を案内 |
+| 当たり判定の 1 カラムずれ | 右端が 1 カラム広い。`range=left` / `range=right` の内側では左端も +1（F9） | tmux 側の挙動。SKILL.md で回避策（`status_format_N` を自前定義）を案内 |
 | 設定変更に再起動が必要 | `hsl` セッションの再起動が要る | 既存の全設定と同じ。挙動変化なし |
 | `status_interval` 由来の表示遅延 | クリック直後の再描画は最大 `status_interval` 秒遅れる | 基盤の対象外 |
 
@@ -339,9 +380,12 @@ Rust の writer を実行してワイヤ形式を生成しているため、プ�
 
 ### 統合（`tests/test_tmux_runtime.py`）
 
-6. `mouse_clicks = false`: `mouse` が `off` のまま、status 系 binding が 0 本（回帰）
-7. `mouse_clicks = true` + 実行可能な `on-click.sh`: `mouse` が `on`、
-   `MouseDown1Status` / `MouseDown3Status` / `WheelUpStatus` / `WheelDownStatus` の 4 本が存在
+6. `mouse_clicks = false`: `mouse` が `off` のまま、**root テーブルが 0 本**（回帰。
+   base.conf の `unbind-key -a -T root` が効いていること）
+7. `mouse_clicks = true` + 実行可能な `on-click.sh`: `mouse` が `on`、**root テーブルが
+   ちょうど 4 本**で、`MouseDown1Status` / `MouseDown3Status` / `WheelUpStatus` /
+   `WheelDownStatus` のみ。tmux 標準の `DoubleClick1Pane` や `MouseDown1Control9` が
+   復活していないことを明示的に検証する
 8. `mouse_clicks = true` + フック不在: `mouse` は `off`、binding 0 本、stderr に警告、起動は成功
 9. `mouse_clicks = true` + フックが非実行可能（実行ビット無し）: 8 と同じ
 10. `apply_status_options` が新しいオフセットで正しく動く（既存テストの維持を確認）
@@ -355,6 +399,10 @@ Rust の writer を実行してワイヤ形式を生成しているため、プ�
     `(button, range, x, line)` を期待どおり受け取る。left / right / wheel を網羅
 14. **回帰**: `mouse on` の状態で、pane 内アプリが 1000 モード・1003 モードの双方で
     クリック・モーション・ドラッグ・ホイールをバイト単位で受信する
+15. range 外（`StatusDefault` 相当の余白）をクリックしてもフックが呼ばれない（F11）
+16. `mouse_clicks = true` のまま `unbind-key -a -T root` を外した構成では、
+    tmux 標準 binding が復活して 14 が壊れることを確認する negative test。
+    §5.3 の 1 行が本当に必要であることを回帰から守る
 
 テスト 13・14 の pty 注入手法は `tmp/tmux-statusline-mouse-support.md` 付録 B の
 スクリプトを流用する。フックのパスに空白を含むケースを 13 に含め、`shell_quote` の
@@ -364,7 +412,7 @@ Rust の writer を実行してワイヤ形式を生成しているため、プ�
 
 ## 10. 受け入れ条件
 
-- 上記テスト 1〜14 がすべて通る
+- 上記テスト 1〜16 がすべて通る
 - `cargo build --release --locked` が通る
 - 変更した shell スクリプトすべてに `sh -n` が通る
 - `mouse_clicks` 未指定の既存 `config.toml` が挙動を変えずに読み込める
