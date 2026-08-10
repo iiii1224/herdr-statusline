@@ -303,7 +303,9 @@ mouse_ranges_supported() {
 # arbitrary code. The hook path goes the same way, as a user option, so a `#`
 # in the config path cannot be re-expanded either. shell_quote is deliberately
 # not used here; it escapes for a generated script, not for tmux's two-stage
-# expansion.
+# expansion. Note the escaper covers sh metacharacters, not whitespace: a
+# newline or tab in a value passes through raw. No path reaches these fields
+# with either today, but do not restate the guarantee more broadly than that.
 #
 # -b, the redirect and the `|| true` are three separate requirements: without
 # -b the hook blocks the command queue, without the redirect its stdout is
@@ -329,7 +331,10 @@ apply_mouse_clicks() {
     fi
 
     hook=$HERDR_PLUGIN_CONFIG_DIR/on-click.sh
-    if [ ! -x "$hook" ]; then
+    # -x alone is true for a searchable directory, which would turn the mouse
+    # on for a hook that can never run: every click fails with 126 into
+    # /dev/null and the user silently loses the terminal's own selection.
+    if [ ! -f "$hook" ] || [ ! -x "$hook" ]; then
         printf 'hsl: mouse_clicks is on but %s is not executable\n' "$hook" >&2
         printf '%s\n' 'hsl: mouse clicks stay off' >&2
         return 0

@@ -1,3 +1,4 @@
+import os
 import pathlib
 import shutil
 import subprocess
@@ -124,10 +125,17 @@ class StatusClickTests(MouseIntegrationBase):
         marker = None
         for suffix in range(1000):
             candidate = pathlib.Path(f"/tmp/z{suffix:03d}")
-            if not candidate.exists():
-                marker = candidate
-                break
+            try:
+                # O_EXCL, not a prior exists() check: two concurrent runs can
+                # both see the same name free and then both claim it.
+                os.close(os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+            except FileExistsError:
+                continue
+            marker = candidate
+            break
         self.assertIsNotNone(marker, "no free /tmp/zNNN marker path")
+        # Held only to reserve the name; the injection would recreate it.
+        marker.unlink()
         self.addCleanup(marker.unlink, True)
         evil = f"a';>{marker};'"
         self.assertEqual(len(evil), 15)
@@ -176,9 +184,24 @@ class StatusClickTests(MouseIntegrationBase):
             term.click(BUTTON_COL, STATUS_ROW)
             lines = term.wait_for_lines(self.hook_log, 1)
             drawn = term.drawn()
+            probe = term.probe(self.app_log)
         self.assertEqual(lines, ["ran"], "the hook never ran")
         self.assertNotIn(b"NOISE-MARKER", drawn)
-        self.assertNotIn(b"returned 7", drawn)
+        # `|| true` is what keeps this true, and the pane is where it shows.
+        # A non-zero run-shell -b has no command queue to report to, so tmux
+        # takes the pane into view-mode instead — Herdr loses it. Matching on
+        # drawn text cannot guard this: tmux's message embeds the whole
+        # command, so it wraps at the terminal width and never appears
+        # contiguously in the client's byte stream.
+        # An empty probe is itself the symptom: once tmux has taken the pane,
+        # the probe keystroke goes to view-mode and never reaches the stub.
+        self.assertTrue(
+            probe,
+            "the pane stopped accepting input after a failing hook, which is "
+            "what happens when the binding lacks `|| true`",
+        )
+        self.assertIn("in_mode=0", probe,
+                      "a failing hook put the pane into a tmux mode")
 
     def test_a_slow_hook_does_not_block_the_command_queue(self):
         # -b is the whole point. The hook announces itself and only then
@@ -208,6 +231,22 @@ class StatusClickTests(MouseIntegrationBase):
             lines = term.wait_for_lines(self.hook_log, 6)
         self.assertEqual(len(lines), 6)
         self.assertEqual(set(lines), {"left|btn|2|0"})
+
+
+@unittest.skipUnless(TMUX, "tmux is not installed")
+@unittest.skipUnless(tmux_at_least_3_4(), "needs tmux 3.4 or newer")
+class RootTableContentsTests(MouseIntegrationBase):
+    def test_a_wired_server_holds_exactly_the_four_status_bindings(self):
+        # The fake-tmux test can only see the argv run-in-tmux emitted; it
+        # cannot observe a key table. This is the same claim on a real server
+        # with the mouse actually on, which is when tmux's own defaults would
+        # come back if base.conf stopped clearing root.
+        self.hook()
+        with self.session() as term:
+            probe = term.probe(self.app_log)
+        # #{mouse} is a flag format: 1, not "on".
+        self.assertIn("mouse=1", probe)
+        self.assertIn("rootkeys=4", probe)
 
 
 @unittest.skipUnless(TMUX, "tmux is not installed")
@@ -281,7 +320,19 @@ class RootTableGuardTests(MouseIntegrationBase):
         env = self.runtime_env()
         env["HSL_TEST_BASE_CONF"] = str(patched)
         event = r"\x1b[<10;10;5M"
+        control = r"\x1b[<0;10;5M"
         with HslPty(RUNTIME, env) as term:
+            # Positive control first, in this same session. Without it a
+            # session that never started — a bad HSL_TEST_BASE_CONF, a slow
+            # boot — is indistinguishable from tmux swallowing the event, and
+            # the assertions below would pass having tested nothing. A plain
+            # click survives because the restored MouseDown1Pane forwards it.
+            term.click(10, PANE_ROW)
+            self.assertTrue(
+                term.wait_for_text(self.app_log, control, timeout=6.0),
+                "the session with root left populated never forwarded "
+                "anything, so its negative result proves nothing",
+            )
             term.click(10, PANE_ROW, button=10)   # M-MouseDown3Pane (Alt+right)
             # Expected to time out: the default binding swallows the event.
             broken_arrived = term.wait_for_text(self.app_log, event, timeout=4.0)

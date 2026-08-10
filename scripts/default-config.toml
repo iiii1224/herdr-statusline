@@ -9,7 +9,9 @@ enabled = true
 # provides. It receives four arguments:
 #
 #   $1  left | right | wheelup | wheeldown
-#   $2  the range name under the pointer
+#   $2  the range name under the pointer. tmux's own window list uses
+#       `window`, and session and pane lists use `session` and `pane`,
+#       so treat those three as reserved and do not declare them
 #   $3  the mouse column, zero-based
 #   $4  the status line number, zero-based
 #

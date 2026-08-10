@@ -65,7 +65,10 @@ create it. Turning the feature on costs the terminal its native selection and
 middle-click paste, so say so before enabling it for someone.
 
 Mark an area with `#[range=user|NAME]` ... `#[norange]`. `NAME` is at most 15
-bytes and reaches the hook as its second argument.
+bytes and reaches the hook as its second argument. tmux dispatches its own
+ranges through the same hook, so `window`, `session` and `pane` arrive there
+too — with the shipped default format, clicking a window name sends
+`window`. Treat those three names as reserved.
 
 Two different layers bound what a name can be. tmux's format parser reads the
 status line first, so a `#` in a name has to be written `##`, and a space ends

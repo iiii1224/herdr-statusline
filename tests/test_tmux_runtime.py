@@ -517,10 +517,13 @@ class TmuxRuntimeTests(unittest.TestCase):
         self.assertEqual(list(self.private_tmp.iterdir()), [])
 
     def wire(self, *, hook="#!/bin/sh\nexit 0\n", executable=True,
-             config_dir=True, version="tmux 3.7b", reject=None):
+             config_dir=True, version="tmux 3.7b", reject=None,
+             hook_is_dir=False):
         """Run the runtime with mouse_clicks on, returning (result, argv)."""
         cfg = self.base / "cfg"
-        if hook is not None:
+        if hook_is_dir:
+            (cfg / "on-click.sh").mkdir(parents=True, exist_ok=True)
+        elif hook is not None:
             cfg.mkdir(parents=True, exist_ok=True)
             path = cfg / "on-click.sh"
             path.write_text(hook)
@@ -591,6 +594,16 @@ class TmuxRuntimeTests(unittest.TestCase):
 
     def test_leaves_the_mouse_off_when_the_hook_is_not_executable(self):
         result, argv = self.wire(executable=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("is not executable", result.stderr)
+        self.assert_no_mouse_changes(argv)
+
+    def test_leaves_the_mouse_off_when_the_hook_is_a_directory(self):
+        # `test -x` is true for a searchable directory, so an -x check on its
+        # own would turn the mouse on for a hook that can never run: every
+        # click would fail with 126 into /dev/null and the user would lose the
+        # terminal's own selection for nothing, with no diagnostic.
+        result, argv = self.wire(hook_is_dir=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("is not executable", result.stderr)
         self.assert_no_mouse_changes(argv)

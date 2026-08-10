@@ -23,7 +23,7 @@ import time
 # encoding, recording exactly what tmux forwards. Exits on `q` so the runtime
 # can tear its session down normally.
 INNER_APP = r"""
-import os, sys, time, tty
+import os, subprocess, sys, time, tty
 log = sys.argv[1]
 open(log, "w").close()
 tty.setraw(0)
@@ -40,6 +40,20 @@ while time.time() < end:
         continue
     with open(log, "a") as stream:
         stream.write(repr(data) + "\n")
+    if b"p" in data:
+        # Probe: report server state a test cannot otherwise reach. This runs
+        # inside the pane, so $TMUX already points at the disposable server.
+        out = subprocess.run(
+            ["tmux", "display-message", "-p",
+             "PROBE in_mode=#{pane_in_mode} mouse=#{mouse}"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        keys = subprocess.run(
+            ["tmux", "list-keys", "-T", "root"], capture_output=True, text=True,
+        ).stdout.strip()
+        n = len([line for line in keys.splitlines() if line.strip()])
+        with open(log, "a") as stream:
+            stream.write(f"{out} rootkeys={n}\n")
     if b"q" in data:
         break
 """
@@ -191,6 +205,26 @@ class HslPty:
                         return True
             self._drain(0.2)
         return False
+
+    def probe(self, log_path, timeout=6.0):
+        """Ask the inner stub for live server state and return its report.
+
+        Some invariants are only visible on the server: a hook that exits
+        non-zero without `|| true` has no command queue to print to, so tmux
+        puts the pane into view-mode instead. Nothing in the client's byte
+        stream shows that, and the message it does print wraps at the
+        terminal width, so matching on drawn text is not a reliable guard.
+        """
+        self._send("p", settle=0.3)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if os.path.exists(log_path):
+                with open(log_path) as stream:
+                    for line in reversed(stream.read().splitlines()):
+                        if line.startswith("PROBE "):
+                            return line
+            self._drain(0.2)
+        return ""
 
     def drawn(self):
         return bytes(self._buffer)
