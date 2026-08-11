@@ -22,7 +22,11 @@ with log.open('a') as stream:
         'term_present': 'TERM' in os.environ,
         'term': os.environ.get('TERM', ''),
     }) + '\\n')
-if 'set-option' in args and os.environ.get('HSL_TEST_TMUX_REJECT', '') in args:
+if args == ['-V']:
+    print(os.environ.get('HSL_TEST_TMUX_VERSION', 'tmux 3.7b'))
+    raise SystemExit(0)
+reject = os.environ.get('HSL_TEST_TMUX_REJECT', '')
+if reject and reject in args and ('set-option' in args or 'bind-key' in args):
     print('rejected by the fake tmux', file=sys.stderr)
     raise SystemExit(1)
 if 'new-session' in args:
@@ -105,6 +109,7 @@ pathlib.Path(os.environ['HSL_TEST_HERDR_LOG']).write_text(json.dumps({
     'window_name': option('display-message', '-p', '#W'),
     'status': option('show-options', '-g', 'status'),
     'status_format_1': option('show-options', '-g', 'status-format[1]'),
+    'root_keys': option('list-keys', '-T', 'root'),
 }))
 raise SystemExit(0)
 PY_SMOKE
@@ -144,7 +149,7 @@ class TmuxRuntimeTests(unittest.TestCase):
             }
         )
 
-    def run_runtime(self, *args, options=None, **extra_env):
+    def run_runtime(self, *args, options=None, mouse=False, **extra_env):
         env = self.env.copy()
         # A None value removes the variable, which no plain update() can do.
         for key, value in extra_env.items():
@@ -154,10 +159,48 @@ class TmuxRuntimeTests(unittest.TestCase):
                 env[key] = value
         if "HSL_STATUS_OPTIONS" not in extra_env:
             pairs = DEFAULT_OPTIONS if options is None else options
-            env["HSL_STATUS_OPTIONS"] = str(write_protocol(self.base, pairs))
+            env["HSL_STATUS_OPTIONS"] = str(
+                write_protocol(self.base, pairs, mouse_clicks=mouse)
+            )
         return subprocess.run(
             ["sh", str(RUNTIME), *args], cwd=ROOT, env=env, text=True, capture_output=True
         )
+
+    def test_still_applies_status_options_after_the_protocol_shift(self):
+        result = self.run_runtime("--session", "x")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        applied = [
+            args[args.index("set-option") + 1 :]
+            for args in self.tmux_argv()
+            if "set-option" in args
+        ]
+        self.assertIn(["-g", "status-interval", "3"], applied)
+        self.assertIn(["-g", "status-position", "top"], applied)
+
+    def test_rejects_a_protocol_whose_mouse_clicks_line_is_not_boolean(self):
+        broken = self.base / "broken-options"
+        broken.write_text("true\nmaybe\n0\n")
+        result = self.run_runtime("--session", "x", HSL_STATUS_OPTIONS=str(broken))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("invalid hsl-config output", result.stderr)
+
+    def test_rejects_an_old_writer_protocol(self):
+        # Old writer, new runner. Line 2 of the old format is the option count,
+        # so the boolean check rejects it before the line count is reached.
+        old = self.base / "old-options"
+        old.write_text("true\n1\nstatus-interval\n3\n")
+        result = self.run_runtime("--session", "x", HSL_STATUS_OPTIONS=str(old))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("invalid hsl-config output", result.stderr)
+
+    def test_rejects_a_protocol_whose_pairs_sit_at_the_old_offsets(self):
+        # The other skew direction: a payload shaped for the old reader must
+        # be refused rather than applied one line off.
+        skewed = self.base / "skewed-options"
+        skewed.write_text("true\nfalse\n1\nstatus-interval\n3\nstray\n")
+        result = self.run_runtime("--session", "x", HSL_STATUS_OPTIONS=str(skewed))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("invalid hsl-config output", result.stderr)
 
     def tmux_calls(self):
         return [json.loads(line) for line in self.tmux_log.read_text().splitlines()]
@@ -473,6 +516,147 @@ class TmuxRuntimeTests(unittest.TestCase):
             self.assertEqual(record["args"], ["--session", f"s{index}"])
         self.assertEqual(list(self.private_tmp.iterdir()), [])
 
+    def wire(self, *, hook="#!/bin/sh\nexit 0\n", executable=True,
+             config_dir=True, version="tmux 3.7b", reject=None,
+             hook_is_dir=False):
+        """Run the runtime with mouse_clicks on, returning (result, argv)."""
+        cfg = self.base / "cfg"
+        if hook_is_dir:
+            (cfg / "on-click.sh").mkdir(parents=True, exist_ok=True)
+        elif hook is not None:
+            cfg.mkdir(parents=True, exist_ok=True)
+            path = cfg / "on-click.sh"
+            path.write_text(hook)
+            path.chmod(0o700 if executable else 0o600)
+        env = {"HSL_TEST_TMUX_VERSION": version}
+        if reject is not None:
+            env["HSL_TEST_TMUX_REJECT"] = reject
+        env["HERDR_PLUGIN_CONFIG_DIR"] = str(cfg) if config_dir else ""
+        result = self.run_runtime("--session", "x", mouse=True, **env)
+        return result, self.tmux_argv()
+
+    def mouse_option_calls(self, argv):
+        return [a for a in argv if "set-option" in a and "mouse" in a]
+
+    def bind_calls(self, argv):
+        return [a for a in argv if "bind-key" in a]
+
+    def hook_option_calls(self, argv):
+        return [a for a in argv if "set-option" in a and "@hsl_on_click" in a]
+
+    def assert_no_mouse_changes(self, argv):
+        """Nothing mouse-specific was touched.
+
+        Checking only the mouse option and the bindings would still pass if
+        @hsl_on_click were set before the guard that declined, so the user
+        option is part of the contract too.
+        """
+        self.assertEqual(self.bind_calls(argv), [])
+        self.assertEqual(self.mouse_option_calls(argv), [])
+        self.assertEqual(self.hook_option_calls(argv), [])
+
+    def test_wires_exactly_four_status_bindings(self):
+        result, argv = self.wire()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        binds = self.bind_calls(argv)
+        self.assertEqual(len(binds), 4)
+        self.assertEqual(
+            sorted(a[a.index("bind-key") + 2] for a in binds),
+            ["MouseDown1Status", "MouseDown3Status",
+             "WheelDownStatus", "WheelUpStatus"],
+        )
+        self.assertEqual(
+            sorted(a[-1].split()[1] for a in binds),
+            ["left", "right", "wheeldown", "wheelup"],
+        )
+        for args in binds:
+            command = args[-1]
+            self.assertIn("-b", args)
+            self.assertIn("#{q:@hsl_on_click}", command)
+            self.assertIn("#{q:mouse_status_range}", command)
+            self.assertIn("#{q:mouse_x}", command)
+            self.assertIn("#{q:mouse_status_line}", command)
+            self.assertIn(">/dev/null 2>&1 || true", command)
+            # Hand-quoting a format is the injection bug; only #{q:} may appear.
+            self.assertNotIn("'#{", command)
+        self.assertEqual(len(self.mouse_option_calls(argv)), 1)
+        self.assertIn(
+            ["set-option", "-g", "@hsl_on_click",
+             str(self.base / "cfg" / "on-click.sh")],
+            [a[a.index("set-option"):] for a in argv if "set-option" in a],
+        )
+
+    def test_leaves_the_mouse_off_when_the_hook_is_missing(self):
+        result, argv = self.wire(hook=None)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("mouse clicks stay off", result.stderr)
+        self.assert_no_mouse_changes(argv)
+
+    def test_leaves_the_mouse_off_when_the_hook_is_not_executable(self):
+        result, argv = self.wire(executable=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("is not executable", result.stderr)
+        self.assert_no_mouse_changes(argv)
+
+    def test_leaves_the_mouse_off_when_the_hook_is_a_directory(self):
+        # `test -x` is true for a searchable directory, so an -x check on its
+        # own would turn the mouse on for a hook that can never run: every
+        # click would fail with 126 into /dev/null and the user would lose the
+        # terminal's own selection for nothing, with no diagnostic.
+        result, argv = self.wire(hook_is_dir=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("is not executable", result.stderr)
+        self.assert_no_mouse_changes(argv)
+
+    def test_leaves_the_mouse_off_when_the_config_dir_is_unknown(self):
+        result, argv = self.wire(config_dir=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("plugin config dir is unknown", result.stderr)
+        self.assert_no_mouse_changes(argv)
+
+    def test_leaves_the_mouse_off_below_tmux_3_4(self):
+        for version in ("tmux 3.3a", "tmux 3.0", "tmux 2.9", "tmux 1.8"):
+            with self.subTest(version=version):
+                self.tmux_log.write_text("")
+                result, argv = self.wire(version=version)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("tmux 3.4", result.stderr)
+                self.assert_no_mouse_changes(argv)
+                # Ordinary status options are unrelated and still apply.
+                self.assertTrue(
+                    [a for a in argv
+                     if "set-option" in a and "status-interval" in a]
+                )
+
+    def test_enables_the_mouse_on_tmux_3_4_and_newer(self):
+        for version in ("tmux 3.4", "tmux 3.7b", "tmux 4.0",
+                        "tmux next-3.9", "weird output"):
+            with self.subTest(version=version):
+                self.tmux_log.write_text("")
+                result, argv = self.wire(version=version)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(len(self.bind_calls(argv)), 4)
+
+    def test_fails_closed_when_the_hook_option_is_rejected(self):
+        result, _ = self.wire(reject="@hsl_on_click")
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse(self.herdr_log.exists(), "herdr must not start")
+
+    def test_fails_closed_when_the_mouse_option_is_rejected(self):
+        result, _ = self.wire(reject="mouse")
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse(self.herdr_log.exists(), "herdr must not start")
+
+    def test_fails_closed_when_any_binding_is_rejected(self):
+        for key in ("MouseDown1Status", "MouseDown3Status",
+                    "WheelUpStatus", "WheelDownStatus"):
+            with self.subTest(key=key):
+                self.tmux_log.write_text("")
+                result, _ = self.wire(reject=key)
+                self.assertEqual(result.returncode, 2)
+                self.assertFalse(self.herdr_log.exists(),
+                                 "herdr must not start")
+
 
 class RealTmuxSmokeTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("tmux"), "tmux is not installed")
@@ -587,6 +771,12 @@ class RealTmuxSmokeTests(unittest.TestCase):
                 ["set-clipboard", "on"],
             )
             self.assertEqual(record["window_name"], "herdr")
+
+            # `unbind-key -a` clears only the prefix table. tmux keeps 24
+            # default mouse bindings in root, inert while the mouse is off but
+            # ready to take copy-mode, the pane context menu, the kill-pane
+            # menu and border resize away from Herdr the moment it goes on.
+            self.assertEqual(record["root_keys"], "")
 
             # The job ran, which means status-format still composes status-left,
             # and it saw the session name from the tmux environment.

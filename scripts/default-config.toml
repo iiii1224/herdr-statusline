@@ -1,5 +1,27 @@
 enabled = true
 
+# Status-line mouse clicks. Off by default. Turning this on asks the outer
+# terminal for mouse reporting, which costs you its native selection and
+# middle-click paste, so it is opt-in.
+#
+# It needs tmux 3.4 or newer, and it does nothing on its own: clicks are
+# dispatched to `on-click.sh` in this directory, which you or another plugin
+# provides. It receives four arguments:
+#
+#   $1  left | right | wheelup | wheeldown
+#   $2  the range name under the pointer. tmux's own window list uses
+#       `window`, and session and pane lists use `session` and `pane`,
+#       so treat those three as reserved and do not declare them
+#   $3  the mouse column, zero-based
+#   $4  the status line number, zero-based
+#
+# Mark a clickable area in a status format with `#[range=user|NAME]` ...
+# `#[norange]`, where NAME is at most 15 bytes. The hook's stdout and exit
+# status are discarded, so call `tmux display-message` to say anything. It may
+# run several times at once, in no particular order.
+#
+#   mouse_clicks = true
+
 [statusline]
 status_interval = 1
 status_right = "%m/%d %H:%M:%S"

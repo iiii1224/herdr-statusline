@@ -8,13 +8,18 @@ SESSION_NAME=hsl
 WINDOW_NAME=herdr
 STDERR_REPLAY_LIMIT=20
 root=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd)
-BASE_CONF=$root/tmux/base.conf
+# Overridable for tests only: the root-table guard has to start a server
+# without `unbind-key -a -T root` and show that pass-through breaks.
+BASE_CONF=${HSL_TEST_BASE_CONF:-$root/tmux/base.conf}
 
 # hsl-internal's trap died at its exec, so this file is ours to remove. Adopt it
 # before the tmux check below, which exits without reaching `trap cleanup`. An
 # unset value is legitimate: it means no options, exactly like an absent
 # [statusline] section.
 STATUS_OPTIONS=${HSL_STATUS_OPTIONS:-}
+# Set before apply_status_options runs so an absent options file leaves the
+# feature off rather than unset. apply_mouse_clicks reads this.
+MOUSE_CLICKS=false
 remove_status_options() {
     [ -n "$STATUS_OPTIONS" ] || return 0
     rm -f "$STATUS_OPTIONS"
@@ -218,24 +223,43 @@ apply_status_options() {
         printf '%s\n' 'hsl: invalid hsl-config output' >&2
         return 2
     }
-    count=$(sed -n '2p' "$STATUS_OPTIONS")
+    # Line 1 is `enabled`, already consumed by bin/hsl-internal; line 2 is
+    # `mouse_clicks`; the count is line 3 and the pairs start at line 4.
+    MOUSE_CLICKS=$(sed -n '2p' "$STATUS_OPTIONS") || {
+        printf '%s\n' 'hsl: invalid hsl-config output' >&2
+        return 2
+    }
+    case $MOUSE_CLICKS in
+        true|false) ;;
+        *)
+            printf '%s\n' 'hsl: invalid hsl-config output' >&2
+            return 2
+            ;;
+    esac
+    count=$(sed -n '3p' "$STATUS_OPTIONS") || {
+        printf '%s\n' 'hsl: invalid hsl-config output' >&2
+        return 2
+    }
     case ${count:-x} in
         ''|*[!0-9]*)
             printf '%s\n' 'hsl: invalid hsl-config output' >&2
             return 2
             ;;
     esac
-    lines=$(wc -l <"$STATUS_OPTIONS")
-    [ "$lines" -eq $((2 + count * 2)) ] || {
+    lines=$(wc -l <"$STATUS_OPTIONS") || {
+        printf '%s\n' 'hsl: invalid hsl-config output' >&2
+        return 2
+    }
+    [ "$lines" -eq $((3 + count * 2)) ] || {
         printf '%s\n' 'hsl: invalid hsl-config output' >&2
         return 2
     }
     index=0
     while [ "$index" -lt "$count" ]; do
-        name=$(sed -n "$((3 + index * 2))p" "$STATUS_OPTIONS")
+        name=$(sed -n "$((4 + index * 2))p" "$STATUS_OPTIONS") || return 2
         # Command substitution strips the line terminator and nothing else, so
         # a value's leading and trailing spaces survive.
-        value=$(sed -n "$((4 + index * 2))p" "$STATUS_OPTIONS")
+        value=$(sed -n "$((5 + index * 2))p" "$STATUS_OPTIONS") || return 2
         case $name in
             window-status-*) scope=-gw ;;
             *) scope=-g ;;
@@ -248,9 +272,98 @@ apply_status_options() {
     done
 }
 
+# Unlike allow-passthrough below, user ranges cannot be detected by setting
+# them: tmux validates the `range` style keyword but not its value, so
+# `range=user|p` is accepted on 3.3 too, where user ranges do not exist.
+# Version parsing is the only test that discriminates, so it is used here and
+# nowhere else. Anything unparseable counts as new enough: those are builds
+# whose version string this cannot read at all, and refusing them would
+# silently ignore an explicit opt-in. `next-3.9` is not such a case: the
+# expression below reads 3 and 9 out of it and compares them normally.
+mouse_ranges_supported() {
+    version=$("$TMUX_BIN" -V 2>/dev/null) || return 0
+    numbers=$(printf '%s' "$version" |
+        sed -n 's/[^0-9]*\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p') || return 0
+    [ -n "$numbers" ] || return 0
+    major=${numbers% *}
+    minor=${numbers#* }
+    [ "$major" -gt 3 ] && return 0
+    [ "$major" -eq 3 ] && [ "$minor" -ge 4 ] && return 0
+    return 1
+}
+
+# Status-line mouse clicks are opt-in and inert without a hook: enabling the
+# mouse with nothing to dispatch to would only cost the user the terminal's
+# native selection and give nothing back.
+#
+# Every field travels through tmux's own `#{q:...}` sh-escaper. run-shell
+# format-expands the whole string before handing it to /bin/sh -c, so a range
+# name is attacker-controlled text landing inside a shell command line: a
+# 15-byte name is enough to break out of hand-written single quotes and run
+# arbitrary code. The hook path goes the same way, as a user option, so a `#`
+# in the config path cannot be re-expanded either. shell_quote is deliberately
+# not used here; it escapes for a generated script, not for tmux's two-stage
+# expansion. Note the escaper covers sh metacharacters, not whitespace: a
+# newline or tab in a value passes through raw. No path reaches these fields
+# with either today, but do not restate the guarantee more broadly than that.
+#
+# -b, the redirect and the `|| true` are three separate requirements: without
+# -b the hook blocks the command queue, without the redirect its stdout is
+# drawn over Herdr, and without `|| true` a non-zero exit still is.
+#
+# Nothing mouse-specific is touched on any early return. Ordinary status
+# options are unrelated to this feature and have already been applied.
+apply_mouse_clicks() {
+    [ "${MOUSE_CLICKS:-false}" = true ] || return 0
+
+    if ! mouse_ranges_supported; then
+        printf '%s\n' \
+            'hsl: mouse_clicks needs tmux 3.4 or newer for user ranges;' \
+            'hsl: mouse clicks stay off' >&2
+        return 0
+    fi
+
+    if [ -z "${HERDR_PLUGIN_CONFIG_DIR:-}" ]; then
+        printf '%s\n' \
+            'hsl: mouse_clicks is on but the plugin config dir is unknown;' \
+            'hsl: mouse clicks stay off' >&2
+        return 0
+    fi
+
+    hook=$HERDR_PLUGIN_CONFIG_DIR/on-click.sh
+    # -x alone is true for a searchable directory, which would turn the mouse
+    # on for a hook that can never run: every click fails with 126 into
+    # /dev/null and the user silently loses the terminal's own selection.
+    if [ ! -f "$hook" ] || [ ! -x "$hook" ]; then
+        printf 'hsl: mouse_clicks is on but %s is not executable\n' "$hook" >&2
+        printf '%s\n' 'hsl: mouse clicks stay off' >&2
+        return 0
+    fi
+
+    "$TMUX_BIN" -L "$socket" set-option -g @hsl_on_click "$hook" || return 2
+    "$TMUX_BIN" -L "$socket" set-option -g mouse on || return 2
+
+    for pair in \
+        'MouseDown1Status left' \
+        'MouseDown3Status right' \
+        'WheelUpStatus wheelup' \
+        'WheelDownStatus wheeldown'
+    do
+        key=${pair% *}
+        name=${pair#* }
+        "$TMUX_BIN" -L "$socket" bind-key -n "$key" run-shell -b \
+            "#{q:@hsl_on_click} $name #{q:mouse_status_range} #{q:mouse_x} #{q:mouse_status_line} >/dev/null 2>&1 || true" \
+            || return 2
+    done
+}
+
 # A failure here must not reach herdr. The launcher is still blocked in
 # `wait-for hsl-start`, so exiting takes the whole server down with it.
 if ! apply_status_options; then
+    exit 2
+fi
+
+if ! apply_mouse_clicks; then
     exit 2
 fi
 

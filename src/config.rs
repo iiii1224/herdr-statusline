@@ -10,6 +10,11 @@ use std::path::Path;
 struct RawConfig {
     #[serde(default = "default_enabled")]
     enabled: bool,
+    /// Opt-in for status-line mouse clicks. Off by default: turning the mouse
+    /// on costs the outer terminal its native selection, because tmux then
+    /// asks it for 1000/1002/1003/1006 reporting.
+    #[serde(default)]
+    mouse_clicks: bool,
     #[serde(default)]
     statusline: Statusline,
 }
@@ -51,6 +56,7 @@ impl<'de> Deserialize<'de> for Statusline {
 #[derive(Debug, PartialEq, Eq)]
 pub struct NormalizedConfig {
     pub enabled: bool,
+    pub mouse_clicks: bool,
     /// `(tmux option name, value)`, in document order.
     pub options: Vec<(String, String)>,
 }
@@ -70,17 +76,24 @@ fn normalize(raw: RawConfig) -> Result<NormalizedConfig, String> {
     }
     Ok(NormalizedConfig {
         enabled: raw.enabled,
+        mouse_clicks: raw.mouse_clicks,
         options,
     })
 }
 
 /// Map a config key to a tmux option name and bound what may be set.
 ///
-/// The prefixes are the whole safety argument: no option named `status`,
-/// `status-*` or `window-status-*` can reach `prefix`, key bindings, `mouse`,
-/// hooks, `destroy-unattached` or `remain-on-exit`, so the disposable session's
+/// The prefixes bound the blast radius: no option named `status`, `status-*`
+/// or `window-status-*` can reach `prefix`, key bindings, `mouse`, hooks,
+/// `destroy-unattached` or `remain-on-exit`, so the disposable session's
 /// invariants cannot be configured away. Whether a name exists at all is
 /// tmux's business, which keeps this free of an option table to maintain.
+///
+/// This is no longer the whole safety argument. The top-level `mouse_clicks`
+/// key is a bounded exception to "tmux takes no input": it turns the mouse on
+/// and installs four fixed root bindings, whose names and bodies are hardcoded
+/// in run-in-tmux and cannot be reached from here. Everything else about the
+/// session stays as it was.
 fn option_name(key: &str) -> Result<String, String> {
     let name = key.replace('_', "-");
     if !(name == "status" || name.starts_with("status-") || name.starts_with("window-status-")) {
@@ -127,6 +140,7 @@ fn option_value(key: &str, value: toml::Value) -> Result<String, String> {
 
 pub fn write_protocol(config: &NormalizedConfig, mut out: impl Write) -> Result<(), String> {
     writeln!(out, "{}", config.enabled).map_err(|e| e.to_string())?;
+    writeln!(out, "{}", config.mouse_clicks).map_err(|e| e.to_string())?;
     writeln!(out, "{}", config.options.len()).map_err(|e| e.to_string())?;
     for (name, value) in &config.options {
         writeln!(out, "{name}").map_err(|e| e.to_string())?;
@@ -337,16 +351,30 @@ window_status_current_format = \"#[fg=colour255,bg=colour27,bold] #I: #W #[defau
     }
 
     #[test]
+    fn defaults_mouse_clicks_to_off_and_parses_both_values() {
+        assert!(!load_text("enabled = true\n").unwrap().mouse_clicks);
+        assert!(load_text("mouse_clicks = true\n").unwrap().mouse_clicks);
+        assert!(!load_text("mouse_clicks = false\n").unwrap().mouse_clicks);
+    }
+
+    #[test]
+    fn rejects_a_non_boolean_mouse_clicks() {
+        assert!(load_text("mouse_clicks = \"on\"\n").is_err());
+        assert!(load_text("mouse_clicks = 1\n").is_err());
+    }
+
+    #[test]
     fn writes_the_variable_length_protocol() {
         let config = load_text(
-            "enabled = false\n[statusline]\nstatus_interval = 2\nstatus_left = \" a \"\n",
+            "enabled = false\nmouse_clicks = true\n\
+             [statusline]\nstatus_interval = 2\nstatus_left = \" a \"\n",
         )
         .unwrap();
         let mut out = Vec::new();
         write_protocol(&config, &mut out).unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
-            "false\n2\nstatus-interval\n2\nstatus-left\n a \n"
+            "false\ntrue\n2\nstatus-interval\n2\nstatus-left\n a \n"
         );
     }
 

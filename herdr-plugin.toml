@@ -1,6 +1,6 @@
 id = "herdr-statusline"
 name = "herdr-statusline"
-version = "0.1.0"
+version = "0.1.2"
 description = "Run Herdr inside a disposable status-line-only tmux session"
 min_herdr_version = "0.7.5"
 platforms = ["linux"]
