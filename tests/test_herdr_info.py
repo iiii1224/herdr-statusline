@@ -266,3 +266,16 @@ class HerdrInfoTemplateTests(unittest.TestCase):
 
     def test_is_a_valid_posix_script(self):
         self.assertEqual(subprocess.run(["sh", "-n", str(TEMPLATE)]).returncode, 0)
+
+    def test_escapes_hash_characters_in_cwd_and_branch(self):
+        repo = self.make_repo("hash#repo")
+        self.git(repo, "checkout", "-q", "-b", "feature/#(id)")
+        out = self.run_template(pane_json(foreground_cwd=str(repo)))
+        self.assertEqual(
+            segments(out),
+            [
+                (PANE_STYLE, "w2D:p1"),
+                (CWD_STYLE, str(repo).replace("#", "##")),
+                (GIT_STYLE, "feature/##(id) ✔"),
+            ],
+        )

@@ -7,6 +7,11 @@ PANE_STYLE='#[fg=#ffffff,bg=#5a45a5]'
 CWD_STYLE='#[fg=#ffffff,bg=#2b6cb0]'
 GIT_STYLE='#[fg=#ffffff,bg=#2f855a]'
 
+# Escape '#' to '##' so tmux treats literal '#' as text rather than a format specifier
+tmux_escape() {
+  printf '%s\n' "$1" | sed 's/#/##/g'
+}
+
 # One flat string field out of herdr's single-line JSON. The wanted values are
 # ids and paths, so this is enough; a literal `"` inside one would defeat it.
 field() {
@@ -69,7 +74,12 @@ if [ -n "$branch" ]; then
     fi
 fi
 
-out="$PANE_STYLE ${pane:-no pane} "
-[ -n "$short_cwd" ] && out="$out$CWD_STYLE $short_cwd "
-[ -n "$branch" ] && out="$out$GIT_STYLE $branch${state:+ $state} "
+safe_pane=$(tmux_escape "${pane:-no pane}")
+safe_cwd=$(tmux_escape "$short_cwd")
+safe_branch=$(tmux_escape "$branch")
+safe_state=$(tmux_escape "$state")
+
+out="$PANE_STYLE $safe_pane "
+[ -n "$short_cwd" ] && out="$out$CWD_STYLE $safe_cwd "
+[ -n "$branch" ] && out="$out$GIT_STYLE $safe_branch${safe_state:+ $safe_state} "
 printf '%s#[default]\n' "$out"
