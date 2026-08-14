@@ -1,0 +1,17 @@
+Control and inspect agent panes
+
+Usage: herdr agent [COMMAND]
+
+Commands:
+  list       List agents
+  get        Show an agent
+  read       Read agent terminal output
+  send-keys  Send key presses to an agent
+  prompt     Submit a prompt to an agent
+  rename     Rename an agent
+  focus      Focus an agent
+  wait       Wait until an agent reaches one of the requested states
+  attach     Attach directly to an agent terminal
+  start      Start a supported interactive agent in an existing pane
+  explain    Explain agent detection state
+

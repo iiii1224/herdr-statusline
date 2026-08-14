@@ -1,0 +1,8 @@
+Manage local configuration
+
+Usage: herdr config [COMMAND]
+
+Commands:
+  check       Validate config.toml and print diagnostics
+  reset-keys  Reset custom keybindings
+

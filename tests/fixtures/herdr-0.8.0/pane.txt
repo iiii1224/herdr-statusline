@@ -1,0 +1,30 @@
+Control terminal panes
+
+Usage: herdr pane [COMMAND]
+
+Commands:
+  list                  List panes
+  current               Show the current pane
+  get                   Show a pane
+  layout                Show pane layout information
+  process-info          Show pane process information
+  neighbor              Find a pane neighbor
+  edges                 Show pane edge information
+  focus                 Focus a neighboring pane
+  resize                Resize a pane split
+  zoom                  Toggle or set pane zoom
+  read                  Read pane terminal output
+  rename                Rename a pane
+  split                 Split a pane
+  swap                  Swap panes
+  move                  Move a pane
+  close                 Close a pane
+  send-text             Send literal text to a pane
+  send-keys             Send key presses to a pane
+  wait-output           Wait for matching pane output
+  run                   Run a command in a pane
+  report-agent          Report pane agent lifecycle state
+  report-agent-session  Report pane agent session identity
+  release-agent         Release pane agent lifecycle authority
+  report-metadata       Report display-only pane metadata
+

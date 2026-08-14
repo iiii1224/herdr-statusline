@@ -1,0 +1,9 @@
+Attach to or observe raw terminal streams
+
+Usage: herdr terminal [COMMAND]
+
+Commands:
+  attach   Attach directly to a terminal stream
+  session  Work with terminal sessions
+  title    Manage the outer terminal title
+

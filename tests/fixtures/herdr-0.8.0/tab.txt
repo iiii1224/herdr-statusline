@@ -1,0 +1,12 @@
+Manage tabs over the socket API
+
+Usage: herdr tab [COMMAND]
+
+Commands:
+  list    List tabs
+  create  Create a tab
+  get     Show a tab
+  focus   Focus a tab
+  rename  Rename a tab
+  close   Close a tab
+

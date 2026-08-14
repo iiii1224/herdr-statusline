@@ -41,6 +41,10 @@ DIRECT = [
     ("agent", "list"),
     ("terminal", "list"),
     ("future-command", "value with space"),
+    # herdr 0.8.0 added --skill; --default-config predates it. Both are
+    # terminating globals, so hsl must not spend a tmux server on them.
+    ("--skill",),
+    ("--default-config",),
     # herdr takes --handoff and --remote-keybindings only alongside --remote:
     # without one it answers `unknown option: --handoff` and
     # `--remote-keybindings requires --remote`. Wrapping these would spend a
