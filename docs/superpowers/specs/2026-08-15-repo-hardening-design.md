@@ -569,7 +569,7 @@ E-3 (契約テスト) ──▶ C-3 の後（deselect / fail 方針が前提）
 | AC-E2-5 | config 不在時 exit 2 で、ファイルを作成しない |
 | AC-E2-6 | `SKILL.md` に `plugin_root` を parse させる記述が残っていない |
 | AC-E3-1 | 層 1: 拡張後の `test_hsl_internal.py` の argv 行列に `--skill` と `--default-config` が `DIRECT` として含まれ、herdr 不在環境で pass する（skip しない）。`is_interactive()` を抽出・source する実装が存在しない |
-| AC-E3-2 | 層 2: snapshot fixture が `herdr --help` に加え `session` / `agent` / `terminal` の各 `--help` を含み、正規化済みで絶対パスを含まない |
+| AC-E3-2 | 層 2: snapshot fixture が `herdr --help` に加え、**root help から発見できる全 top-level subcommand と既知の例外 `plugin`（F29）** の各 `--help` を含み、正規化済みで絶対パスを含まない。これにより AC-E3-4 の負例検査が空集合に対して vacuous に合格する抜け道を塞ぐ |
 | AC-E3-3 | 層 2: fixture から抽出したグローバルオプション集合が期待集合と**厳密一致**する（`--session` `--remote` `--no-session` `--handoff` `--remote-keybindings` `--default-config` `--skill` `--version` `-V` `--help` `-h`） |
 | AC-E3-4 | 層 2: fixture 上で `session` / `agent` / `terminal` が `attach` を**持つ**こと、かつ fixture に収めた他のどのサブコマンドも `attach` を**持たない**こと。**「全 herdr サブコマンドのうち attach を持つのはこの 3 つだけ」という網羅性は主張しない**（F29 により help 解析では到達不能） |
 | AC-E3-5 | 層 3: herdr 0.8.0 が存在する環境で live 比較を明示選択すると **pass** する |
