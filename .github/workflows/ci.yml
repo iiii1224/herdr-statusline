@@ -26,6 +26,8 @@ jobs:
           python-version: '3.12'
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Install Python dev dependencies
+        run: python3 -m pip install -r requirements-dev.txt
       - name: Format
         run: cargo fmt --check
       - name: Clippy
@@ -35,7 +37,7 @@ jobs:
       - name: Build the release helper
         run: cargo build --release --locked
       - name: Python integration tests
-        run: python3 -m unittest discover -s tests -v
+        run: python3 -m pytest -n auto --dist loadscope
       - name: Shell syntax
         run: |
           sh -n bin/hsl-internal

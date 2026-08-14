@@ -101,3 +101,15 @@ tmux -L <socket> kill-server
 ### Kitty graphics protocol
 
 Kitty graphics protocol output is not supported inside the tmux wrapper.
+
+## Development
+
+```sh
+make test          # Build the release helper, then run the suite in parallel
+make test-serial   # Same suite, one process
+```
+
+The Python suite requires `target/release/hsl-config` to exist before pytest
+starts, which is why `make test` builds first. Install the test dependencies
+with `python3 -m pip install -r requirements-dev.txt`.
+

@@ -3,6 +3,7 @@ import pathlib
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 
 from tests.helpers import ROOT, MANAGED_MARKER, base_env, make_executable
 
@@ -160,4 +161,27 @@ class BuildTests(unittest.TestCase):
         self.assertIn("herdr plugin config-dir herdr-statusline", text)
         self.assertNotIn("./install.sh", text)
         self.assertNotIn(".local/share/herdr-statusline", text)
+
+    def test_ensure_helper_does_not_build(self):
+        # Under `pytest -n auto` every worker is a separate process, and a
+        # session-scoped fixture never runs in the xdist controller at all,
+        # so there is no in-pytest place to build exactly once. The build is
+        # a precondition instead; see the Makefile and the CI build step.
+        from tests import helpers
+
+        self.assertFalse(hasattr(helpers, "_HELPER_BUILT"))
+        with unittest.mock.patch.object(helpers.subprocess, "run") as run:
+            helpers.ensure_helper()
+        run.assert_not_called()
+
+    def test_ensure_helper_says_what_to_run_when_the_binary_is_absent(self):
+        # AC-D1-2. A worker that starts without the artifact must not fail
+        # with a bare FileNotFoundError three frames deep.
+        from tests import helpers
+
+        with unittest.mock.patch.object(helpers.os, "access", return_value=False):
+            with self.assertRaises(RuntimeError) as caught:
+                helpers.ensure_helper()
+        self.assertIn("make test", str(caught.exception))
+
 
