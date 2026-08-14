@@ -1199,7 +1199,10 @@ AC-D2-3 は「実装例はあるが検証がない」状態のままになる。
         self.ready_marker.write_text("STALE\n")
 
         stub = self.fakebin / "herdr"
-        make_executable(stub, "#!/bin/sh\nprintf 'STUCK\\n'\nsleep 5\n")
+        # STUCK is printed into the pane so the assertion below can prove the
+        # error message carries the real buffer, not just a label. The sleep
+        # must outlive ready_timeout so the session is still up when it fires.
+        make_executable(stub, "#!/bin/sh\nprintf 'STUCK\\n'\nsleep 15\n")
         options = write_protocol(
             self.base,
             [("status-interval", "1"), ("status-format-0", STATUS_FORMAT)],
@@ -1217,16 +1220,23 @@ AC-D2-3 は「実装例はあるが検証がない」状態のままになる。
             env["TERM"] = "xterm-256color"
 
         with self.assertRaises(AssertionError) as caught:
-            with HslPty(RUNTIME, env, self.ready_marker, ready_timeout=2.0):
+            with HslPty(RUNTIME, env, self.ready_marker, ready_timeout=5.0):
                 pass
         message = str(caught.exception)
         self.assertIn("never became mouse-ready", message)
-        self.assertIn("pty buffer", message)
+        # Not just the "pty buffer" label: assert the buffer's actual content
+        # reached the message. A fixed string carrying the label but omitting
+        # the bytes would satisfy a label-only check and tell a debugger
+        # nothing. AC-D2-3.
+        self.assertIn("STUCK", message)
 ```
 
-> `ready_timeout=2.0` を渡すので、この負例は 2 秒強で終わる。既定の 30 秒を待たせると
+> `ready_timeout=5.0` を渡すので、この負例は 5 秒強で終わる。既定の 30 秒を待たせると
 > Step 6 の 5 回反復と AC-G-5 の 10 回測定に乗って性能ゲートを不当に悪化させる。
-> 値は固定であり、実行エージェントが調整を判断する余地はない。
+> 5 秒にしているのは、`STUCK` がペインに描画されて `_drain` に取り込まれるまでに
+> run-in-tmux のセッション構築（terminfo 確認、tmux 起動、オプション適用、attach）が
+> 挟まるためで、負荷の高いランナーでも間に合う余裕を取っている。値は固定であり、
+> 実行エージェントが調整を判断する余地はない。
 
 - [ ] **Step 5: マウステストが通ることを確認**
 
