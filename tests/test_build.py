@@ -1,6 +1,7 @@
 import os
 import pathlib
 import subprocess
+import sys
 import tempfile
 import unittest
 import unittest.mock
@@ -183,5 +184,51 @@ class BuildTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as caught:
                 helpers.ensure_helper()
         self.assertIn("make test", str(caught.exception))
+
+    def test_ci_fails_the_session_when_a_test_is_skipped(self):
+        # CI must not go green because a precondition silently vanished.
+        # The probe file has to live under tests/ so that tests/conftest.py
+        # is on its ancestor path and actually gets loaded.
+        probe = ROOT / "tests" / f"test_skip_probe_{os.getpid()}.py"
+        probe.write_text(
+            "import unittest\n"
+            "class SkipProbeTests(unittest.TestCase):\n"
+            "    @unittest.skip('deliberate probe')\n"
+            "    def test_x(self):\n"
+            "        pass\n"
+        )
+        self.addCleanup(probe.unlink)
+
+        env = dict(os.environ)
+        env["CI"] = "true"
+        for extra in (["-p", "no:xdist"], ["-n", "2"]):
+            with self.subTest(mode=" ".join(extra)):
+                result = subprocess.run(
+                    [sys.executable, "-m", "pytest", str(probe), "-q", *extra],
+                    cwd=ROOT, env=env, text=True, capture_output=True,
+                )
+                self.assertNotEqual(
+                    result.returncode, 0,
+                    f"a skipped test must fail the session under CI\n{result.stdout}",
+                )
+                self.assertIn("forbids silent skips", result.stdout)
+
+    def test_a_skipped_test_is_tolerated_outside_ci(self):
+        probe = ROOT / "tests" / f"test_skip_probe_local_{os.getpid()}.py"
+        probe.write_text(
+            "import unittest\n"
+            "class SkipProbeLocalTests(unittest.TestCase):\n"
+            "    @unittest.skip('deliberate probe')\n"
+            "    def test_x(self):\n"
+            "        pass\n"
+        )
+        self.addCleanup(probe.unlink)
+
+        env = {k: v for k, v in os.environ.items() if k != "CI"}
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", str(probe), "-q", "-p", "no:xdist"],
+            cwd=ROOT, env=env, text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
 
 

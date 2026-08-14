@@ -1,5 +1,7 @@
 [tool.pytest.ini_options]
+addopts = "-m 'not live_herdr'"
 testpaths = ["tests"]
 # tests/ is a package and the suite imports `from tests.helpers import ...`,
 # so the repository root has to be on sys.path.
 pythonpath = ["."]
+
