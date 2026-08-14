@@ -141,6 +141,18 @@ class BuildTests(unittest.TestCase):
         if self.bindir.exists():
             self.assertEqual([p.name for p in self.bindir.iterdir()], [])
 
+    def test_warns_when_the_launcher_directory_is_not_on_path(self):
+        result = self.run_build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(self.bindir), result.stderr)
+        self.assertIn("PATH", result.stderr)
+
+    def test_stays_quiet_when_the_launcher_directory_is_on_path(self):
+        self.env["PATH"] = f"{self.bindir}:{self.env['PATH']}"
+        result = self.run_build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("PATH", result.stderr)
+
     def test_readme_documents_only_the_standard_workflow(self):
         text = (ROOT / "README.md").read_text()
         self.assertIn("herdr plugin install iiii1224/herdr-statusline", text)
@@ -148,3 +160,4 @@ class BuildTests(unittest.TestCase):
         self.assertIn("herdr plugin config-dir herdr-statusline", text)
         self.assertNotIn("./install.sh", text)
         self.assertNotIn(".local/share/herdr-statusline", text)
+
