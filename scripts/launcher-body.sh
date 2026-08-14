@@ -67,6 +67,7 @@ rewrite_self() {
 
 mode=run
 purge=false
+check_config_path=
 if [ "${1:-}" = uninstall ]; then
     mode=uninstall
     if [ "$#" -eq 1 ]; then
@@ -75,6 +76,16 @@ if [ "${1:-}" = uninstall ]; then
         purge=true
     else
         printf '%s\n' 'usage: hsl uninstall [--purge]' >&2
+        exit 2
+    fi
+elif [ "${1:-}" = --hsl-check-config ]; then
+    mode=check-config
+    if [ "$#" -eq 1 ]; then
+        check_config_path=
+    elif [ "$#" -eq 2 ]; then
+        check_config_path=$2
+    else
+        printf '%s\n' 'usage: hsl --hsl-check-config [<config.toml>]' >&2
         exit 2
     fi
 fi
@@ -103,6 +114,23 @@ fi
 
 HELPER=$PLUGIN_ROOT/target/release/hsl-config
 INTERNAL=$PLUGIN_ROOT/bin/hsl-internal
+
+if [ "$mode" = check-config ]; then
+    if [ -z "$check_config_path" ]; then
+        require_herdr
+        config_dir=$("$HERDR_BIN" plugin config-dir "$PLUGIN_ID") || {
+            printf '%s\n' 'hsl: failed to resolve the plugin config directory' >&2
+            exit 2
+        }
+        check_config_path=$config_dir/config.toml
+    fi
+    [ -f "$check_config_path" ] || {
+        printf 'hsl: no such configuration file: %s\n' "$check_config_path" >&2
+        exit 2
+    }
+    "$HELPER" load "$check_config_path" >/dev/null || exit 2
+    exit 0
+fi
 
 if [ "$mode" = uninstall ]; then
     require_herdr

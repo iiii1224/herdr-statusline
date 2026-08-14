@@ -262,6 +262,70 @@ class LauncherTests(unittest.TestCase):
             ["plugin", "uninstall", "herdr-statusline"], self.herdr_calls()
         )
 
+    def test_check_config_accepts_a_valid_file(self):
+        config = self.base / "config.toml"
+        config.write_text("enabled = true\n[statusline]\nstatus_interval = 1\n")
+        result = self.run_launcher("--hsl-check-config", str(config))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_check_config_rejects_a_broken_file(self):
+        config = self.base / "config.toml"
+        config.write_text("[statusline]\nprefix = \"C-b\"\n")
+        result = self.run_launcher("--hsl-check-config", str(config))
+        self.assertEqual(result.returncode, 2)
+        self.assertNotEqual(result.stderr, "")
+
+    def test_check_config_reports_a_missing_file(self):
+        missing = self.base / "absent.toml"
+        result = self.run_launcher("--hsl-check-config", str(missing))
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse(missing.exists(), "must not create the file")
+
+    def test_check_config_rejects_extra_arguments(self):
+        result = self.run_launcher("--hsl-check-config", "a", "b")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("usage", result.stderr.lower())
+
+    def test_check_config_with_an_explicit_path_never_calls_herdr(self):
+        # Do NOT empty PATH to prove this: root_is_complete() runs `grep`
+        # before the check-config branch is reached, so an empty PATH would
+        # fail a correct implementation for the wrong reason. Replace herdr
+        # with a shim that records being called instead -- it tests the
+        # contract directly.
+        config = self.base / "config.toml"
+        config.write_text("enabled = true\n")
+        called = self.base / "herdr-was-called"
+        make_executable(
+            self.fakebin / "herdr",
+            f"#!/bin/sh\ntouch {called}\nexit 1\n",
+        )
+        result = self.run_launcher("--hsl-check-config", str(config))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(
+            called.exists(), "the explicit-path form must not invoke herdr"
+        )
+
+    def test_check_config_without_arguments_resolves_the_config_dir(self):
+        # The zero-argument path is the one the skill tells agents to use,
+        # so it needs a positive case of its own.
+        config_dir = self.base / "cfgdir"
+        config_dir.mkdir()
+        (config_dir / "config.toml").write_text("enabled = true\n")
+        make_executable(
+            self.fakebin / "herdr",
+            "#!/bin/sh\n"
+            'if [ "$1" = plugin ] && [ "$2" = config-dir ]; then\n'
+            f"    printf '%s\\n' {config_dir}\n"
+            "    exit 0\n"
+            "fi\n"
+            "exit 1\n",
+        )
+        result = self.run_launcher("--hsl-check-config")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+
+
 
 FAKE_TMUX_E2E = """#!/bin/sh
 python3 - "$@" <<'PY'
