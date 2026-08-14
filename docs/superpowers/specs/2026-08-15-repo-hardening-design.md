@@ -4,7 +4,14 @@
 - 対象リポジトリ: `herdr-statusline`
 - 検証環境: tmux 3.7b / Linux WSL2 / herdr 0.8.0 / rustc 1.97.1 / shellcheck 0.11.0 /
   Python 3.12 / pytest 9.1.1 / pytest-xdist 3.8.0
-- 改訂: rev3（codex レビュー 2 巡目の指摘 6 件を検証し全件採用。1 巡目は 10 件全件採用）
+- 改訂: rev4（codex レビュー 3 巡目の指摘 1 件を検証。**修正案は前提が偽であることを実測で
+  示したうえで代替案を採用**。1 巡目 10 件・2 巡目 6 件は全件採用）
+
+### rev3 → rev4 の変更
+
+| 指摘 | 変更 |
+| --- | --- |
+| Medium | AC-E3-4 の `attach` 集合の厳密一致は、fixture が 3 サブコマンドの help しか持たないため正例しか検査していなかった。**指摘は正しい。** ただし提示された修正案「root command graph から全 top-level subcommand を列挙して厳密集合を検査」は前提が偽である——F29 の通り `herdr --help` に `plugin` は現れないが `herdr plugin` は実在し、しかも `bin/hsl-internal` が最も依存するサブコマンドである。この案に従うと `plugin` を欠いた集合で「厳密一致」に合格し、網羅性について偽の確信を与える。よって代替案（正例 + best-effort な負例、網羅性を主張しない）を採用し、§8-7 に限界と、それが許容できる理由（default-deny のため取りこぼしは機能低下であって破壊ではない）を記録した |
 
 ### rev2 → rev3 の変更
 
@@ -130,6 +137,7 @@ CI の検出力、テスト実行時間、そして出荷コードが外部プ�
 | F24 | `0622df4` と `16de6df`（`eb38ecb` の親、`0.1.0` を宣言する最後のコミット）は、いずれも `cargo build --release --locked` に成功する | §5.B-3。`v0.1.0` はどちらにも打てる。どちらを選ぶかは F27 が決める |
 | F27 | `git diff --shortstat 0622df4 16de6df` は 19 files / +3743 / -206（mouse support を含む）。`git diff --shortstat 16de6df 16bd1b7` は 3 files / +3 / -3（version と lock のみ） | §5.B-3。`v0.1.0` を `16de6df` に打つと機能のほぼ全部が 0.1.0 に属し、0.1.2 が 3 行の bump だけになる。リリースの記述として成立しないため `0622df4` を採る |
 | F28 | `tests/test_hsl_internal.py` は既に `INTERACTIVE` / `DIRECT` の argv 行列を持ち、`bin/hsl-internal` を**スクリプト全体として実行**して fake runtime と fake herdr のどちらへ到達したかを検査している。現行の行列に `--skill` と `--default-config` は含まれていない | §5.E-3。層 1 は新機構ではなく**既存行列の拡張**である |
+| F29 | `herdr --help` の出力に文字列 `plugin` は **1 度も現れない**が、`herdr plugin --help` は実在し `install` / `list` / `config-dir` 等を持つ。`bin/hsl-internal` はこの `plugin` サブコマンドに依存している | §5.E-3。**root help は全 top-level subcommand を列挙していない。**したがって help 解析から「`attach` を持つのはこの 3 つだけ」を証明することはできない |
 | F25 | rustc 1.85.0 / 1.88.0 / 1.95.0 / 1.96.0 / 1.97.1 のすべてで `cargo build --release --locked` と `cargo test` が成功する。1.85.0 より古い toolchain は当環境に未導入で、**未検証** | §5.B-4。1.85 は「通ることを確認した最古」であって「最小」ではない |
 | F26 | `herdr --help` の出力は `Config: /home/iida/.config/herdr/config.toml` と `Logs: ...` の 2 行に**絶対パスを含む** | §5.E-3。raw 出力の完全一致 fixture は別ユーザー環境で必ず失敗する |
 
@@ -422,7 +430,7 @@ live 比較を既定集合から外せば、上流の drift は永遠に CI を�
 | 層 | 名称 | 検出するもの | **検出しないもの** | 実行 |
 | --- | --- | --- | --- | --- |
 | 1 | ローカル分類器の契約回帰 | 分類器または期待行列が意図せず変わったこと | **上流 herdr の変化は一切観測しない** | CI 常時 |
-| 2 | 0.8.0 compatibility snapshot | コードが記録済み 0.8.0 CLI と整合していること | snapshot 自体が古くなったこと | CI 常時 |
+| 2 | 0.8.0 compatibility snapshot | コードが記録済み 0.8.0 CLI と整合していること | snapshot 自体が古くなったこと。**`attach` を持つ集合の網羅性**（F29） | CI 常時 |
 | 3 | live 比較 | 実 herdr と snapshot の乖離 | — | opt-in のみ |
 
 1. **層 1 — ローカル分類器の契約回帰（herdr 不要）**: F28 の通り
@@ -435,11 +443,26 @@ live 比較を既定集合から外せば、上流の drift は永遠に CI を�
    取り出す実装は脆く、§4-3 の「本番の配線そのものを起動する」にも反する。
    この層は **drift に対する防御ではない**（rev2 の記述を訂正）。
 2. **層 2 — 0.8.0 compatibility snapshot（herdr 不要）**: `herdr --help` に加え、
-   `herdr session --help` / `herdr agent --help` / `herdr terminal --help` の出力を
-   fixture としてコミットする。**root help 単体からは `agent attach` と
-   `terminal attach` を抽出できない**ため、サブコマンドの help が必要である。
-   絶対パス（F26）・末尾空白・折返しを正規化したうえで記録し、そこから抽出した
-   **グローバルオプション集合**と **`attach` を持つサブコマンド集合**を厳密一致で表明する。
+   root help から発見できる全 top-level subcommand と、そこに現れない既知のもの
+   （F29 の `plugin`）の `--help` 出力を fixture としてコミットする。**root help 単体からは
+   `agent attach` と `terminal attach` を抽出できない**ため、サブコマンドの help が必要である。
+   絶対パス（F26）・末尾空白・折返しを正規化したうえで記録する。
+
+   表明は 2 種類に分け、**強さを取り違えない**。
+
+   - **グローバルオプション集合**: 厳密一致。root help の `Options:` 節は完結しているため。
+   - **`attach` を持つサブコマンド**: `session` / `agent` / `terminal` の 3 つが `attach` を
+     **持つこと**（正例）と、fixture に収めた他のどのサブコマンドも `attach` を
+     **持たないこと**（best-effort な負例）。**これは網羅性の証明ではない。**
+
+   **網羅性を主張しない理由**（codex 2 巡目指摘への反論）: 「root command graph から全
+   top-level subcommand を列挙して厳密集合を検査せよ」という案は、root help が全
+   subcommand を列挙しているという前提に立つ。F29 の通りこれは**偽**である——`herdr --help`
+   に `plugin` は現れないが、`herdr plugin` は実在し、しかも `bin/hsl-internal` が最も
+   依存しているサブコマンドである。この前提で「厳密一致」を書くと、`plugin` を欠いた集合に
+   対して合格し、**網羅性について偽の確信**を与える。help 解析で到達できないものを
+   到達したふりをするより、到達できないと書くほうが正しい。
+
    名称は "compatibility snapshot" であり "drift detection" とは呼ばない。
 3. **層 3 — live 比較（opt-in）**: 実 `herdr` の出力を同じ正規化にかけ、snapshot と
    比較する。既定集合からは **deselect** する（skip ではない）。明示選択されたうえで
@@ -548,7 +571,7 @@ E-3 (契約テスト) ──▶ C-3 の後（deselect / fail 方針が前提）
 | AC-E3-1 | 層 1: 拡張後の `test_hsl_internal.py` の argv 行列に `--skill` と `--default-config` が `DIRECT` として含まれ、herdr 不在環境で pass する（skip しない）。`is_interactive()` を抽出・source する実装が存在しない |
 | AC-E3-2 | 層 2: snapshot fixture が `herdr --help` に加え `session` / `agent` / `terminal` の各 `--help` を含み、正規化済みで絶対パスを含まない |
 | AC-E3-3 | 層 2: fixture から抽出したグローバルオプション集合が期待集合と**厳密一致**する（`--session` `--remote` `--no-session` `--handoff` `--remote-keybindings` `--default-config` `--skill` `--version` `-V` `--help` `-h`） |
-| AC-E3-4 | 層 2: fixture から抽出した `attach` を持つサブコマンド集合が `{session, agent, terminal}` と**厳密一致**する |
+| AC-E3-4 | 層 2: fixture 上で `session` / `agent` / `terminal` が `attach` を**持つ**こと、かつ fixture に収めた他のどのサブコマンドも `attach` を**持たない**こと。**「全 herdr サブコマンドのうち attach を持つのはこの 3 つだけ」という網羅性は主張しない**（F29 により help 解析では到達不能） |
 | AC-E3-5 | 層 3: herdr 0.8.0 が存在する環境で live 比較を明示選択すると **pass** する |
 | AC-E3-6 | 層 3: fixture に意図的な差分を注入すると live 比較が **fail** する（red 確認。無条件 fail する偽実装との区別） |
 | AC-E3-7 | 層 3: 明示選択したうえで herdr が不在なら **fail** する（skip しない） |
@@ -578,3 +601,13 @@ E-3 (契約テスト) ──▶ C-3 の後（deselect / fail 方針が前提）
    グローバルオプションを追加しても、誰かが層 3 を手動で実行するまで CI は緑のままである。**
    この限界を承知のうえで受け入れる。rev2 は層 1 を「drift に対する主たる防御」と書いていたが
    これは誤りであり、rev3 で撤回した。
+
+7. **`attach` を持つサブコマンドの網羅性は、どの層でも証明されない。** F29 の通り
+   `herdr --help` は `plugin` を列挙しないため、help 解析から全 top-level subcommand を
+   得ることができず、「`attach` を持つのは 3 つだけ」は best-effort な負例検査に留まる。
+
+   **この限界が許容できる理由**: 分類器は default-deny である（F14）。未知の `attach` 形式を
+   取りこぼした場合の結果は「tmux で包まれず pass-through され、ステータスラインが出ない」
+   という**機能低下**であって、コマンドの破壊ではない。逆向きの誤り——herdr が拒否する
+   コマンドを包んで tmux server を無駄に起動する——のほうが害が大きく、そちらは
+   §5.E-3 層 1 の `DIRECT` 行列が守っている。したがって網羅性の欠如は許容する。
