@@ -6,6 +6,7 @@ duplications has bitten or can bite silently.
 """
 
 import re
+import subprocess
 import tomllib
 import unittest
 
@@ -90,3 +91,49 @@ class ConstantAgreementTests(unittest.TestCase):
             ),
             MANAGED_MARKER,
         )
+
+
+class TagTests(unittest.TestCase):
+    """Tags are a release contract: `herdr plugin install --ref vX.Y.Z` builds
+    from them, and scripts/build.sh runs `cargo build --release --locked`, so a
+    tag pointing at a commit whose Cargo.lock disagrees is uninstallable."""
+
+    EXPECTED = {"v0.1.0": "0622df4", "v0.1.2": "16bd1b7"}
+
+    def git(self, *args):
+        return subprocess.run(
+            ["git", "-C", str(ROOT), *args],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+
+    def test_only_the_two_real_versions_are_tagged(self):
+        # 0.1.1 never existed: only 0622df4 and eb38ecb ever touched the
+        # version, and it went 0.1.0 -> 0.1.2.
+        tags = set(self.git("tag").splitlines())
+        self.assertEqual(tags, set(self.EXPECTED))
+
+    def test_each_tag_points_at_the_intended_commit(self):
+        # Version agreement alone is not enough: 16de6df also declares 0.1.0
+        # and also builds, so the expected object id has to be pinned.
+        for tag, short in self.EXPECTED.items():
+            with self.subTest(tag=tag):
+                actual = self.git("rev-parse", f"{tag}^{{commit}}")
+                expected = self.git("rev-parse", f"{short}^{{commit}}")
+                self.assertEqual(actual, expected)
+
+    def test_each_tag_has_agreeing_versions(self):
+        for tag in self.EXPECTED:
+            with self.subTest(tag=tag):
+                manifest = self.git("show", f"{tag}:herdr-plugin.toml")
+                cargo = self.git("show", f"{tag}:Cargo.toml")
+                lock = self.git("show", f"{tag}:Cargo.lock")
+                version = re.search(r'^version = "([^"]+)"', manifest, re.M).group(1)
+                self.assertEqual(
+                    version,
+                    re.search(r'^version = "([^"]+)"', cargo, re.M).group(1),
+                )
+                locked = re.search(
+                    r'name = "hsl-config"\nversion = "([^"]+)"', lock
+                ).group(1)
+                self.assertEqual(version, locked)
+
