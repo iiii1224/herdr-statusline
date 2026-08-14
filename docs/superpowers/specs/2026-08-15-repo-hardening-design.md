@@ -2,8 +2,22 @@
 
 - 日付: 2026-08-15
 - 対象リポジトリ: `herdr-statusline`
-- 検証環境: tmux 3.7b / Linux WSL2 / herdr 0.8.0 / rustc 1.97.1 / shellcheck 0.11.0 / Python 3.12
-- 改訂: rev1（初版）
+- 検証環境: tmux 3.7b / Linux WSL2 / herdr 0.8.0 / rustc 1.97.1 / shellcheck 0.11.0 /
+  Python 3.12 / pytest 9.1.1 / pytest-xdist 3.8.0
+- 改訂: rev2（codex によるレビュー指摘 10 件を検証し、うち **Critical 1 件・High 4 件を
+  含む全件を採用**。あわせて rev1 が未実測の推論を実測事実と並記していた箇所を撤回した）
+
+### rev1 からの主な変更
+
+| 指摘 | 変更 |
+| --- | --- |
+| Critical | §5.D-1 の `workerinput` × session fixture 設計は**動かない**（実測）。ビルドを pytest の外へ出す設計へ全面変更 |
+| High | §5.D-2 の readiness signal がレース含み。専用 ready marker へ変更 |
+| High | §5.C-1 の SC1007 は 5 件ではなく **8 件**。抑制中心から**書き換え中心**へ方針転換 |
+| High | §5.E-3 の fixture は drift 検出になっていない。契約テスト + 正規化 fixture へ変更 |
+| High | 受入基準（rev2 では §7）に AC ID を付与し、全 15 項目を客観判定可能にした |
+| — | F1 / F5 / F20 の数値誤り、`GIT_OPTIONAL_LOCKS` の意味の誤り、`--ref` の効用の誇張を訂正 |
+| — | タグ対象を **2 本**（`v0.1.1` は存在しない）に訂正し、打てるコミットを実測で確定 |
 
 ---
 
@@ -11,8 +25,7 @@
 
 `herdr-statusline` の中核ロジック（`src/`・`bin/hsl-internal`・`scripts/run-in-tmux`）は
 既に高い水準にある。`cargo fmt --check` と `cargo clippy -D warnings` は無指摘、Rust 単体
-46 件と Python 統合 132 件が全通過し、シェルスクリプトは shellcheck の観点でも実質無指摘
-である（F7）。
+46 件と Python 統合 132 件が全通過する。
 
 本仕様が扱うのは中核ロジックではなく、その**周辺**である。すなわち配布物としての体裁、
 CI の検出力、テスト実行時間、そして出荷コードが外部プロセスへ与える副作用。いずれも
@@ -22,8 +35,8 @@ CI の検出力、テスト実行時間、そして出荷コードが外部プ�
 
 ### 解決する課題
 
-1. 出荷スクリプトが git の index lock を奪い、ユーザー自身の git 操作を失敗させうる
-2. MIT を主張しながら LICENSE ファイルが無く、バージョンを固定する手段（タグ）も無い
+1. 出荷スクリプトが git の index lock を取り、ユーザー自身の git 操作と競合しうる
+2. MIT を主張しながら LICENSE ファイルが無く、版を固定する手段（タグ）も無い
 3. CI が 1200 行の POSIX シェルを構文チェックしかしておらず、機能テストが黙って skip されうる
 4. テストが 112 秒かかり、その 69% が 1 モジュールの直列実行に起因する
 5. 主要機能（`mouse_clicks`）が README に存在せず、設定検証手順が内部実装に依存している
@@ -34,7 +47,7 @@ CI の検出力、テスト実行時間、そして出荷コードが外部プ�
 
 ### 対象
 
-6 ワークストリーム 15 項目。内訳は §5 の各節に対応する。
+6 ワークストリーム 15 項目。
 
 | WS | 項目 | 件数 |
 | --- | --- | --- |
@@ -42,73 +55,83 @@ CI の検出力、テスト実行時間、そして出荷コードが外部プ�
 | **B** | LICENSE / CHANGELOG / タグ / MSRV / PATH 警告 | 5 |
 | **C** | shellcheck / ワークフロー整備 / 黙った skip の禁止 | 3 |
 | **D** | pytest + xdist 移行 / 固定待機の除去 | 2 |
-| **E** | README / `--hsl-check-config` / CLI ドリフト検出 | 3 |
+| **E** | README / `--hsl-check-config` / herdr CLI 契約テスト | 3 |
 | **F** | `.gitignore` に `.claude/worktrees/` | 1 |
 | | | **15** |
 
-> 検討開始時の概算は「12 項目」だったが、実際に数えると 13 であり（当初の列挙で
-> ワークストリーム A の 1 件が採番から漏れていた）、さらに B のタグと CHANGELOG を
-> 独立した実装単位として分離したため 15 となった。数え方の差であって、範囲は
-> 合意時点から変わっていない。
-
 ### 非対象
 
-- **中核ロジックの変更**。`is_interactive()` の分類規則、`option_name()` の許可リスト、
-  `run-in-tmux` の二段階起動、purge の検証則は一切触らない。F14・F15 の通り、これらは
-  herdr 0.8.0 に対しても現に正しい。
-- **バージョン bump の自動化**。`scripts/bump-version.sh` 相当は検討したが、利用者判断に
-  より非対象（§9-1）。
-- **GitHub Release ワークフロー**。同上。
-- **macOS 対応**。`herdr-plugin.toml` の `platforms = ["linux"]` は据え置く。
-- **`toml` クレートの 0.9 系への更新**、および依存削減。挙動変更を伴うため別件とする。
-- **`status_interval` 既定値の変更**。§5.A で扱うのは lock 回避のみで、ポーリング頻度の
-  設計是非には踏み込まない。
+**「非対象」は*振る舞いの変更*を指し、ファイルに一切触れないことを指さない。** rev1 は
+この区別を曖昧にしたまま rev1 の受入基準 11 に「非対象ファイルに差分が無いこと」と書き、§5.C-1 が
+`bin/hsl-internal` と `scripts/run-in-tmux` を編集することと矛盾していた（codex 指摘 6）。
+以下は**観測可能な振る舞いを変えない**という意味での非対象である。
+
+- `bin/hsl-internal` の `is_interactive()` / `cli_session()` / `skips_the_local_session()`
+  の**判定結果**。F14・F15 の通り herdr 0.8.0 に対して現に正しい。
+- `src/config.rs` の `option_name()` 許可リストと `write_protocol()` の行プロトコル。
+- `src/purge.rs` の検証則。
+- `scripts/run-in-tmux` の tmux 配線（二段階起動、`wait-for` の解放順序、mouse binding）。
+- `tmux/base.conf` の全内容。
+
+§5.C-1 が行う `CDPATH= cd` → `CDPATH='' cd` 等の書き換えは、シェルの評価結果が同一である
+ことを前提とした**機械的置換**であり、上記の「振る舞いを変えない」に適合する。適合の確認
+方法は AC-C1-3 に定める。
+
+そのほか、以下は本仕様の対象外とする。
+
+- バージョン bump の自動化（§8-1）。
+- GitHub Release ワークフロー。
+- macOS 対応。`herdr-plugin.toml` の `platforms = ["linux"]` は据え置く。
+- `toml` クレートの 0.9 系への更新、および依存削減。
+- `status_interval` 既定値の変更（§8-4）。
 
 ---
 
 ## 3. 前提となる実測事実
 
-すべて §先頭の検証環境で実測した。推測は F 番号を与えず、本文中で明示的に「未測定」と書く。
+すべて §先頭の検証環境で実測した。**推論には F 番号を与えない。** rev1 は F13 として
+未実測の推論を実測事実の表に並記していた。これは本仕様自身の規律違反であり撤回した。
 
 | # | 事実 | 設計への影響 |
 | --- | --- | --- |
-| F1 | `scripts/default-herdr-info.sh:57` は `git -C "$cwd" status --porcelain=v1` を `GIT_OPTIONAL_LOCKS` 無指定で呼ぶ。`git status` は index の stat 情報を更新するため `index.lock` を取得しうる | §5.A の根拠。既定 `status_interval = 1` で毎秒発火する構成を `scripts/default-config.toml` が明示的に案内しているため、ユーザーの `git add` / `commit` / `rebase` と競合しうる |
-| F2 | 同スクリプトの他の git 呼び出し（`symbolic-ref` / `rev-parse` / `rev-list` / `stash list`）は index lock を取らない | 現時点で実害があるのは `status` のみ。ただし §5.A は個別前置ではなく先頭一括 export を採る（理由は §5.A） |
-| F3 | `tests/test_herdr_info.py` は fake git を使わず、**実 git を temp リポジトリに対して**実行する（`git init` / `commit` / `stash` / `branch --set-upstream-to`）。PATH 隔離の仕組みは既にあり、`test_survives_a_missing_git` が利用している | §5.A のテストは「環境変数を記録して実 git へ exec する shim」を PATH 先頭に置く方式を採る。ソース文字列の grep は採らない |
+| F1 | `scripts/default-herdr-info.sh:52` は `git -C "$cwd" status --porcelain=v1` を `GIT_OPTIONAL_LOCKS` 無指定で呼ぶ。`git status` は既定で index の stat 情報を更新し、そのために `index.lock` を取得する | §5.A の根拠。既定 `status_interval = 1` で毎秒発火する構成を `scripts/default-config.toml` が明示的に案内しているため、ユーザーの `git add` / `commit` / `rebase` と競合しうる |
+| F2 | 同スクリプトの他の git 呼び出し（`symbolic-ref` / `rev-parse` / `rev-list` / `stash list`）は index lock を取らない | 現時点で実害があるのは `status` のみ。§5.A が先頭一括 export を採る理由は将来の追記の保護であって、現在の必要性ではない |
+| F3 | `tests/test_herdr_info.py` は fake git を使わず、**実 git を temp リポジトリに対して**実行する。PATH 隔離の仕組みは既にあり `test_survives_a_missing_git` が利用している | §5.A のテストは PATH 先頭の記録 shim 方式を採る |
 | F4 | `LICENSE` / `COPYING` / `CHANGELOG` / `CONTRIBUTING` のいずれも存在しない。一方 `Cargo.toml` は `license = "MIT"` を宣言し、README は MIT バッジを掲げる | §5.B-1、§5.B-2 |
-| F5 | `git tag` の出力は空。コミット数は 34 | §5.B-3。遡及タグ付けが必要 |
-| F6 | `herdr plugin install` は `--ref <REF>` オプションを持つ（`herdr plugin install --help` で確認） | F5 と併せて §5.B-3 の価値を確定させる。タグが無い限りこのオプションは利用者にとって死んでいる |
-| F7 | shellcheck 0.11.0 を全 7 スクリプトに `-s sh` で適用した結果、指摘は 4 種のみ。SC1007（`CDPATH= cd` イディオム、5 箇所）、SC1090（動的 source、2 箇所）、SC1083（`@{upstream}`、1 箇所）、SC2329（trap 経由でのみ呼ばれる関数、3 箇所）。**いずれも意図的な記述で、真の欠陥は 0 件** | §5.C-1。導入コストが現時点で最小であり、これ以上先延ばしする理由が無い |
-| F8 | `.github/workflows/ci.yml` は `sh -n` による構文チェックのみを行う。cargo キャッシュ無し、`permissions` 宣言無し、`on: push`（全ブランチ）と `on: pull_request` の併記により PR ブランチで二重実行される | §5.C-1、§5.C-2 |
-| F9 | `tests/test_tmux_mouse.py` の 4 クラス全てに `@unittest.skipUnless(tmux_at_least_3_4(), ...)` が付く。tmux 不在または 3.4 未満の環境では 12 件が**失敗ではなく skip** となり、CI は緑のままとなる | §5.C-3。機能まるごとの検証が無言で消える経路 |
-| F10 | モジュール別実測時間: `test_tmux_mouse` 77.5s / `test_tmux_runtime` 19.5s / `test_launcher` 3.6s / `test_hsl_internal` 3.6s / `test_herdr_info` 0.3s / `test_build` 0.1s / `test_consistency` 0.0s。全体で 132 件 111.7s | §5.D。総時間の 69% が 1 モジュールに集中 |
-| F11 | `test_tmux_mouse` の 4 クラスを 4 プロセスで同時実行したところ、**全クラス OK で 47.5s**（直列 77.5s）。tmux ソケット名は `mktemp` 由来で呼び出しごとに一意、各テストは専用 tempdir と専用 `TMPDIR` を持つため、共有状態の衝突は無い | §5.D-1。並列化は安全に成立する |
-| F12 | `tests/mouse_pty.py:103`、`HslPty.__enter__` は `self._drain(3.0)` を**無条件**で実行する。同ファイルの `INNER_APP` は起動直後に `open(log, "w").close()` でログファイルを作成する | §5.D-2。ログファイルの出現が readiness シグナルとして利用可能で、テスト側は既にそのパスを保持している |
-| F13 | `tests/helpers.py:40-53`、`ensure_helper()` はモジュールグローバル `_HELPER_BUILT` により「1 プロセスにつき 1 回」`cargo build --release --locked` を実行する | §5.D-1 の最重要論点。xdist のワーカーは別プロセスであり、N ワーカーが同一 `target/` に対して N 回のビルドを起動する |
-| F14 | herdr 0.8.0 は 0.7.5 に無かったグローバルオプション `--skill` を持つ。`is_interactive()` に通すと、`--remote` 不在のため skip ループに入らず、`case $1` のどの分岐にも該当せず `return 1` となり、`exec herdr --skill` へ pass-through される（＝正しい挙動） | 分類器の default-deny 設計が新規グローバルに対して機能していることの確認。**中核ロジックの変更は不要** |
-| F15 | herdr 0.8.0 の `attach` を持つサブコマンドは `session` / `agent` / `terminal` の 3 つのみ。`pane` / `workspace` / `tab` / `integration` に `attach` は存在しない | 分類器の `session\|agent\|terminal` 網羅は 0.8.0 に対しても正確。**中核ロジックの変更は不要** |
-| F16 | `bin/hsl-internal:22` のコメントは分類規則を "Measured against herdr 0.7.5" と記す。この照合を再実行する仕組みはリポジトリ内に存在しない | §5.E-3。F14・F15 は今回手動で確認したが、その検証はどこにも残っていない |
-| F17 | `skills/customize-herdr-statusline/SKILL.md:93-103` は設定検証手順として、`herdr plugin list --json` を parse して `plugin_root` を取り出し、`$plugin_root/target/release/hsl-config load` を直接実行することをエージェントに指示している | §5.E-2。ビルド成果物の内部パスが公開契約に漏れている |
-| F18 | README に `mouse` を含む行は 0 件。`mouse_clicks` の記述は `scripts/default-config.toml` のコメントと SKILL.md にのみ存在する | §5.E-1 |
-| F19 | `.gitignore` の内容は `/target`・`__pycache__/`・`*.pyc` の 3 行のみ。`.claude` は `git check-ignore` に一致しない | §5.F。`EnterWorktree` はリポジトリ内の `.claude/worktrees/` に作業ツリーを作成する |
-| F20 | `Cargo.toml` に `rust-version` の宣言が無い。依存は 35 クレート（`serde` / `serde_json` / `toml` / `tempfile` とその推移閉包） | §5.B-4。MSRV の具体値は**未測定**であり、実装時に CI で確定させる |
-| F21 | ローカル `master` と `origin/master` は同一コミット `16bd1b7`（0 ahead / 0 behind） | 遡及タグ付け（§5.B-3）が push 済み履歴に対して安全に行えることの確認 |
-| F22 | master 最新コミットは `16bd1b7 fix: sync Cargo.lock with the 0.1.2 version bump` である | バージョン同期漏れが実際に発生した記録。§9-1 で bump 自動化を非対象とした判断の背景 |
+| F5 | `git tag` の出力は空。`git rev-list --count HEAD` は 37（本仕様のコミットを含む。master は 36） | §5.B-3 |
+| F6 | `herdr plugin install` は `--ref <REF>` を持つ。ref はタグに限らずブランチ名や SHA も受け付ける | §5.B-3。**タグが無くても `--ref` は使える。**タグの価値は「安定した版参照を提供すること」であって、`--ref` を有効化することではない（rev1 の記述を訂正） |
+| F7 | shellcheck 0.11.0 を全 7 スクリプトに `-s sh` で適用した結果、**SC1007 が 8 件**（`CDPATH= cd` が 6 件、`pane= cwd=` と `branch= state=` が 2 件）、SC1090 が 2 件、SC1083 が 1 件、SC2329 が 3 件。真の欠陥は 0 件 | §5.C-1。rev1 の「SC1007 は 5 件」は誤り |
+| F8 | `.github/workflows/ci.yml` は `sh -n` のみ。cargo キャッシュ無し、`permissions` 宣言無し、`on: push`（全ブランチ）と `on: pull_request` の併記により PR ブランチで二重実行される。`actions/setup-python` も pytest のインストール手順も無い | §5.C-1、§5.C-2、§5.D-1 |
+| F9 | `tests/test_tmux_mouse.py` の 4 クラス全てに `skipUnless(tmux_at_least_3_4(), ...)` が付く。`tests/test_tmux_runtime.py` の実 tmux テストは `skipUnless(shutil.which("script"))` を持つ。いずれも前提欠如時は**失敗ではなく skip** | §5.C-3 |
+| F10 | モジュール別実測: `test_tmux_mouse` 77.5s / `test_tmux_runtime` 19.5s / `test_launcher` 3.6s / `test_hsl_internal` 3.6s / `test_herdr_info` 0.3s / `test_build` 0.1s / `test_consistency` 0.0s。全体 132 件 111.7s | §5.D |
+| F11 | `test_tmux_mouse` の 4 クラスを 4 プロセスで同時実行して**全クラス OK、47.5s**（直列 77.5s） | §5.D-1。並列化は安全に成立する |
+| F12 | `tests/mouse_pty.py:103` の `HslPty.__enter__` は `_drain(3.0)` を無条件実行する。同ファイルの `INNER_APP` は `open(log,"w").close()` → `tty.setraw(0)` → mouse tracking 出力 → `flush()` の順で起動する | §5.D-2。**ログファイルの出現は raw mode と tracking の有効化に先行するため、readiness signal として使えない** |
+| F13 | `pytest -n 4 --dist loadscope`（pytest 9.1.1 / xdist 3.8.0）で `pytest_configure` は 5 プロセス（親 1・worker 4）で実行されるが、**session スコープの autouse fixture は worker 4 プロセスでのみ実行され、親では実行されない**。「`workerinput` を持たないプロセスでのみ実行」する分岐は 0 回しか通らない。直列実行では 1 回通る | §5.D-1。rev1 の設計は**ビルドが一度も走らない**。直列では動くため、書いた本人が気づきにくい |
+| F14 | herdr 0.8.0 は 0.7.5 に無いグローバル `--skill` を持つ。`is_interactive()` に通すと `--remote` 不在で skip ループに入らず、`case $1` のどの分岐にも該当せず `return 1` となり pass-through される | 分類器の default-deny が新規グローバルに対して機能している。**中核ロジックの変更は不要** |
+| F15 | herdr 0.8.0 で `attach` を持つサブコマンドは `session` / `agent` / `terminal` の 3 つのみ | 分類器の網羅は 0.8.0 に対しても正確。**中核ロジックの変更は不要** |
+| F16 | `bin/hsl-internal:22` のコメントは分類規則を "Measured against herdr 0.7.5" と記す。この照合を再実行する仕組みは存在しない | §5.E-3 |
+| F17 | `SKILL.md:93-103` は設定検証手順として `herdr plugin list --json` の parse と `$plugin_root/target/release/hsl-config load` の直接実行を指示している | §5.E-2 |
+| F18 | README に `mouse` を含む行は 0 件 | §5.E-1 |
+| F19 | `.gitignore` は `/target`・`__pycache__/`・`*.pyc` の 3 行のみ。`.claude` は `git check-ignore` に一致しない | §5.F |
+| F20 | `Cargo.toml` に `rust-version` の宣言が無い。`Cargo.lock` の `[[package]]` は 34（root 込み。依存は 33） | §5.B-4 |
+| F21 | ローカル `master` と `origin/master` は同一コミット `16bd1b7`（0 ahead / 0 behind） | §5.B-3 の遡及タグ付けが安全に行える |
+| F22 | `herdr-plugin.toml` と `Cargo.toml` を変更したコミットは `0622df4`（Initial commit、`0.1.0`）と `eb38ecb`（`0.1.2`）の 2 つのみ。**`0.1.1` はどちらの履歴にも存在しない** | §5.B-3。打つタグは 2 本であって 3 本ではない |
+| F23 | `eb38ecb` の `Cargo.lock` は `hsl-config` を `0.1.0` と記録しており、`cargo build --release --locked` が `error: cannot update the lock file ... because --locked was passed` で**失敗する**。`16bd1b7` では成功する | §5.B-3。`scripts/build.sh` は `--locked` を使うため、`eb38ecb` にタグを打つと**インストール不能な ref** を公開することになる |
+| F24 | `0622df4` と `16de6df`（`eb38ecb` の親、`0.1.0` を宣言する最後のコミット）は、いずれも `cargo build --release --locked` に成功する | §5.B-3。`v0.1.0` は `16de6df` に打てる |
+| F25 | rustc 1.85.0 / 1.88.0 / 1.95.0 / 1.96.0 / 1.97.1 のすべてで `cargo build --release --locked` と `cargo test` が成功する。1.85.0 より古い toolchain は当環境に未導入で、**未検証** | §5.B-4。1.85 は「通ることを確認した最古」であって「最小」ではない |
+| F26 | `herdr --help` の出力は `Config: /home/iida/.config/herdr/config.toml` と `Logs: ...` の 2 行に**絶対パスを含む** | §5.E-3。raw 出力の完全一致 fixture は別ユーザー環境で必ず失敗する |
 
 ---
 
 ## 4. 設計方針
 
-3 点を貫く。
-
-1. **中核ロジックを触らない。** F14・F15 が示すとおり、分類器も許可リストも herdr 0.8.0
-   に対して現に正しい。本仕様の変更は周辺に限定し、`src/config.rs`・`src/purge.rs`・
-   `bin/hsl-internal` の `is_interactive()`・`scripts/run-in-tmux` の tmux 配線には
-   変更を加えない。
-2. **黙る失敗を作らない。** §5.C-3 で skip の黙認を禁じる以上、本仕様が新設する検証も
-   同じ規律に従う。§5.E-3 がこの制約と正面衝突するため、そこだけ特別な設計を採る。
-3. **既存のテスト規律を守る。** このリポジトリのテストは「本番の配線そのものを起動する」
-   ことを原則としている（`tests/mouse_pty.py` 冒頭の記述）。新規テストも実物を動かす。
+1. **中核ロジックの振る舞いを変えない。** F14・F15 の通り分類器も許可リストも herdr 0.8.0
+   に対して現に正しい。§2 の非対象定義に従う。
+2. **黙る失敗を作らない。** §5.C-3 で skip の黙認を禁じる以上、本仕様が新設する検証も同じ
+   規律に従う。§5.E-3 がこの制約と衝突するため、そこは「常時走る契約テスト」と
+   「明示選択時に前提不足なら *fail* する live テスト」に分ける。
+3. **既存のテスト規律を守る。** 本番の配線そのものを起動する（`tests/mouse_pty.py` 冒頭）。
+4. **実測と推論を混ぜない。** F 番号は実測にのみ与える。推論は本文で「未測定」と明記する。
 
 ---
 
@@ -116,29 +139,28 @@ CI の検出力、テスト実行時間、そして出荷コードが外部プ�
 
 ### 5.A 出荷スクリプトの git lock 回避
 
-**変更**: `scripts/default-herdr-info.sh` の先頭付近（`set -u` の直後、スタイル定数の前）に
-`export GIT_OPTIONAL_LOCKS=0` を 1 行追加する。
+**変更**: `scripts/default-herdr-info.sh` の `set -u` 直後に `export GIT_OPTIONAL_LOCKS=0`
+を追加する。
 
-**個別前置ではなく先頭一括 export を採る理由**: F2 のとおり実害があるのは `status` の
-1 箇所のみで、そこだけ前置しても現時点の正しさは同じである。しかし本スクリプトは
-`config.toml` のコメントがユーザーへ改造を明示的に勧める「テンプレート」であり、将来
-追記される git 呼び出しが同じ穴を再び開ける。先頭一括なら追記が自動的に保護される。
+**`GIT_OPTIONAL_LOCKS=0` の意味**: git 2.15 以降、この変数は git に対し
+**lock の取得を要する任意の副作用を最初から行わない**よう指示する。「lock を取れなければ
+諦める」というフォールバックではない（rev1 の記述は誤りで、codex 指摘 10 により訂正）。
+`git status` は refresh 結果を index へ書き戻さなくなり、報告内容は変わらない。stat 情報の
+再利用が効かないぶん大規模リポジトリでは僅かに遅くなりうる。
 
-**`GIT_OPTIONAL_LOCKS=0` の意味**: git 2.15 以降、この環境変数は「lock を取れないなら
-取らずに済ませる」ことを git に指示する。`git status` は index を書き戻さなくなり、
-報告内容は変わらない（stat 情報の再利用が効かないぶん、大規模リポジトリでは僅かに遅く
-なりうる）。プロンプト／ステータスライン統合における標準的な対処である。
+**先頭一括 export を採る理由**: F2 の通り現時点で実害があるのは `status` の 1 箇所のみ。
+それでも一括にするのは、本スクリプトが `config.toml` のコメントでユーザーへ改造を勧める
+**テンプレート**であり、将来追記される git 呼び出しを自動的に保護するためである。
 
-**テスト設計**: F3 のとおり既存テストは実 git を使う。したがって、
+**テスト設計**（AC-A1-2）:
 
-- `tests/test_herdr_info.py` に、PATH 先頭へ `git` shim を置くテストを 1 件追加する。
-- shim は `printf '%s\n' "${GIT_OPTIONAL_LOCKS:-<unset>}" >> "$log"` で環境を記録した後、
-  実 git へ `exec` する（記録専用にせず実行も通すことで、既存フィクスチャの構築が壊れない）。
-- 表明は「記録された全行が `0` であること」および「1 行以上記録されたこと」の 2 点。
-  後者が無いと、git が一度も呼ばれない経路で偽陽性の合格になる。
-
-**受け入れ条件**: 上記テストが追加前のスクリプトに対して**失敗**することを実装時に確認する
-（テストが本当に対象を捉えていることの証明）。
+- PATH 先頭に `git` shim を置く。shim は `GIT_OPTIONAL_LOCKS` の値をログへ追記した後、
+  **事前解決した実 git の絶対パス**へ `exec` する（PATH 先頭に自分がいるため、`git` の
+  名前で再帰しない）。
+- テスト起動時の環境に**明示的に `GIT_OPTIONAL_LOCKS=1` を入れる**。開発者の ambient 環境が
+  既に `0` を持つ場合でも red test が確実に赤くなるようにするため（codex 指摘 10）。
+- 表明は 2 点: 記録行が 1 行以上あること、記録された全行が `0` であること。前者が無いと
+  git が一度も呼ばれない経路で偽陽性の合格になる。
 
 ---
 
@@ -146,53 +168,58 @@ CI の検出力、テスト実行時間、そして出荷コードが外部プ�
 
 #### 5.B-1 LICENSE
 
-リポジトリ直下に `LICENSE` を追加。MIT の全文とし、著作権表記は
-`Copyright (c) 2026 IIAD Yusuke` とする。
+`LICENSE` を追加。MIT 全文、著作権表記は `Copyright (c) 2026 IIAD Yusuke`。
 
-> **前提**: 著作権者名は git のコミット identity（`IIAD Yusuke`）を採用した。GitHub の
-> owner 名は `iiii1224` であり、法人名や別表記を希望する場合はここだけ差し替えれば足りる。
-> F4 のとおり `Cargo.toml` に `authors` フィールドが無いため、リポジトリ内に確定的な
-> 典拠が存在しない。
+> **前提**: 著作権者名は git のコミット identity を採用した。GitHub owner は `iiii1224`。
+> F4 の通り `Cargo.toml` に `authors` が無く、リポジトリ内に確定的な典拠が存在しない。
+> 別表記を望む場合はこの 1 行の差し替えで足りる。
 
 #### 5.B-2 CHANGELOG
 
-`CHANGELOG.md` を Keep a Changelog 形式で追加。`## [Unreleased]` に続き、`0.1.2` /
-`0.1.1` / `0.1.0` を git log から遡及記載する。遡及分は網羅的な列挙ではなく、各版で
-利用者から見て何が変わったかの要約に留める（履歴の再構成ではなく、以後の運用開始点を
-作ることが目的）。
+`CHANGELOG.md` を Keep a Changelog 形式で追加。`## [Unreleased]` に続き **`0.1.2` と
+`0.1.0` の 2 版**を記載する。F22 の通り `0.1.1` は存在しないため、**書かない**。
+遡及分は各版で利用者から見て何が変わったかの要約に留める。
 
 #### 5.B-3 タグ
 
-F5・F6・F21 より、`v0.1.0` / `v0.1.1` / `v0.1.2` を該当コミットへ遡及付与する。
-対応コミットは `herdr-plugin.toml` の `version` を変更したコミットを典拠として実装時に
-特定する（`Cargo.toml` 側は F22 の同期漏れがあるため典拠にしない）。
+F22・F23・F24 より、打つタグは 2 本。
 
-タグ形式は `v` 接頭辞付き。`herdr plugin install iiii1224/herdr-statusline --ref v0.1.2`
-が成立することを受け入れ条件とする。
+| タグ | コミット | 根拠 |
+| --- | --- | --- |
+| `v0.1.0` | `16de6df` | `0.1.0` を宣言する最後のコミット。`--locked` ビルド成功（F24） |
+| `v0.1.2` | `16bd1b7` | `--locked` ビルドが成功する最初の `0.1.2` コミット（F23）。master HEAD |
+
+**`v0.1.2` を `eb38ecb`（bump コミット）に打ってはならない。** F23 の通り、そこでは
+`cargo build --release --locked` が失敗し、`scripts/build.sh` がそれを実行するため、
+`--ref v0.1.2` でインストールしたユーザーのビルドが落ちる。
+
+**タグ付与の不変条件**（AC-B3-2）: 任意のタグ `vX.Y.Z` について、
+`herdr-plugin.toml` / `Cargo.toml` / `Cargo.lock` の 3 者が `X.Y.Z` で一致し、かつ
+その ref で `cargo build --release --locked` が成功すること。
+
+**CI での検証には `actions/checkout` の `fetch-depth: 0` が必要**（codex 指摘 1）。既定は
+1 コミットのみでタグを取得しないため、タグ検証ジョブは何も見えないまま緑になる。
 
 #### 5.B-4 MSRV
 
-`Cargo.toml` の `[package]` に `rust-version` を追加する。**値は推測しない。**
+`Cargo.toml` に `rust-version = "1.85"` を追加する。
 
-確定手順:
+**「最小」ではなく「サポートする最小 stable」と定義する**（codex 指摘 9）。F25 の通り
+1.85.0 は通ることを確認した最古の toolchain だが、1.85.0 未満は当環境に未導入で未検証で
+あり、数学的な最小値である証明はない。値を下げたい場合は、より古い toolchain を導入して
+「採用版が通り、その直前 stable が落ちる」証拠を取得したうえで改訂する。
 
-1. 候補バージョンを 1 つ選び、そのバージョンに pin した CI ジョブで
-   `cargo build --release --locked` と `cargo test` を実行する。
-2. 通れば候補を下げ、落ちれば上げる。通る最小値を `rust-version` に採用する。
-3. 採用値に pin した CI ジョブを恒久的に残す。これにより宣言値は構成的に正しくなり、
-   依存更新で MSRV が上がった場合に CI が検知する。
-
-`rust-version` を宣言すれば cargo 自身が古い toolchain に対して明快なエラーを出すため、
-`scripts/build.sh` に追加のバージョン判定は書かない。F20 のとおり本プラグインは全利用者が
-インストール時にコンパイルするため、この宣言の実用的価値は通常のクレートより高い。
+- CI に `rust-version` の値へ pin したジョブを追加し、`cargo build --release --locked` と
+  `cargo test --locked` を実行する。**`cargo test` にも `--locked` を付ける**（依存条件を
+  build と一致させるため。codex 指摘 9）。
+- 宣言があれば cargo 自身が古い toolchain に明快なエラーを出すため、`scripts/build.sh` に
+  追加のバージョン判定は書かない。
 
 #### 5.B-5 PATH 警告
 
-`scripts/build.sh` の末尾、`install-launcher.sh` の実行成功後に、`$bindir` が `PATH` の
-要素として含まれるかを検査し、含まれなければ stderr へ警告を出す。ビルドは失敗させない
-（PATH はユーザーのシェル設定の問題であり、インストール自体は成功しているため）。
-
-判定は `case ":$PATH:" in *":$bindir:"*)` の形を採り、部分一致による誤判定を避ける。
+`scripts/build.sh` 末尾、`install-launcher.sh` の成功後に `$bindir` が `PATH` の要素かを
+`case ":$PATH:" in *":$bindir:"*)` で検査し、無ければ stderr へ警告する。ビルドは
+失敗させない（PATH はユーザーのシェル設定の問題であり、インストール自体は成功している）。
 
 ---
 
@@ -200,43 +227,51 @@ F5・F6・F21 より、`v0.1.0` / `v0.1.1` / `v0.1.2` を該当コミットへ�
 
 #### 5.C-1 shellcheck の導入
 
-CI に shellcheck ステップを追加し、`.github/workflows/ci.yml` の既存 `sh -n` ステップは
-残す（shellcheck は構文チェックの上位互換ではあるが、両者の失敗メッセージの質が異なる）。
+**方針転換（codex 指摘 5）**: rev1 は F7 の 4 種すべてを per-site 抑制する方針だった。
+しかし SC1007・SC1083・SC1090 は**等価な書き換えで警告そのものを消せる**。抑制は
+解析精度を捨てる行為であり、書き換えで済むなら書き換える。
 
-**抑制方針**: F7 の 4 種について、**グローバル除外（`-e SC1007,...`）ではなく、該当行への
-個別 `# shellcheck disable=` 指示を採る。** グローバル除外にすると、同じコードの新しい
-*本物の* 違反が今後黙って通る。SC1007 は 5 箇所あり指示行も 5 行に増えるが、ここは
-冗長性より検出力を優先する。
+| 診断 | 件数 | 対処 |
+| --- | --- | --- |
+| SC1007 | 8 | `CDPATH= cd` → `CDPATH='' cd`（6 件）、`pane= cwd=` / `branch= state=` → 各変数を個別行で初期化（2 件）。**抑制しない** |
+| SC1083 | 1 | `HEAD...@{upstream}` を `"HEAD...@{upstream}"` と quote する。**抑制しない** |
+| SC1090 | 2 | `# shellcheck source=scripts/lib/shell-quote.sh` 指示を置き、解析を通す。**抑制しない** |
+| SC2329 | 3 | trap 経由でのみ呼ばれる関数。回避不能な false positive のため **per-site 抑制**（理由コメント付き） |
 
-各抑制には理由を 1 行添える（例: SC1007 には「`CDPATH=` は空代入ではなく、後続 `cd` への
-一時的な環境変数指定である」）。理由の無い抑制は置かない。
+per-site 抑制という方針自体は維持するが、**適用対象は回避不能な false positive に限る**。
 
-対象は CI の `sh -n` が現在列挙している 7 ファイルと同一とし、両者の対象集合が食い違わ
-ないようにする。
+書き換えは `bin/hsl-internal` と `scripts/run-in-tmux` にも及ぶ。§2 の通りこれは
+「振る舞いを変えない機械的置換」として許容し、AC-C1-3 で同一性を確認する。
+
+CI の対象ファイル集合は既存 `sh -n` ステップと**同一**とし、両者が食い違わないようにする。
+`sh -n` ステップは残す。
 
 #### 5.C-2 ワークフローの整備
 
-F8 に対して 4 点:
+F8 に対して:
 
-- `permissions: contents: read` をワークフロー既定として宣言する。
-- cargo キャッシュを導入する（`Swatinem/rust-cache`）。
-- `on: push` を既定ブランチ限定にし、`on: pull_request` と併せて PR ブランチでの
-  二重実行を解消する。
-- `concurrency` グループを設定し、同一 ref への連続 push で古い実行を打ち切る。
+- `permissions: contents: read` をワークフロー既定として宣言。
+- cargo キャッシュを導入（`Swatinem/rust-cache`）。
+- `on: push` を既定ブランチ限定にし、PR ブランチでの二重実行を解消。
+- `concurrency` グループを設定。
+- `actions/setup-python` を追加し、`python -m pip install -r requirements-dev.txt` を
+  明示する（§5.D-1 の前提。codex 指摘 2）。
+- タグ検証ジョブには `fetch-depth: 0`（§5.B-3）。
 
 #### 5.C-3 黙った skip の禁止
 
-F9 に対して、テスト実行の**前**に前提条件を表明するステップを置く。
+F9 に対して**二層**で対処する。rev1 は前提検査のみで、仕様自身が「skip されなかったことは
+保証しない」と認めていた（codex 指摘 7）。
 
-- tmux が存在し、かつバージョンが 3.4 以上であることを検査し、満たさなければ CI を落とす。
-- 同様に `script`（util-linux）の存在も検査する。`tests/test_tmux_runtime.py` の
-  `RealTmuxSmokeTests` が `skipUnless(shutil.which("script"))` で同じ黙った skip の
-  経路を持つため。
+1. **前提検査**: テスト実行前に tmux（3.4 以上）と `script` の存在を検査し、欠ければ CI を
+   落とす。
+2. **skip の直接禁止**: `conftest.py` に、CI 実行時に限り「skip されたテストが 1 件でも
+   あればセッションの終了ステータスを失敗にする」フックを追加する。CI かどうかは環境変数
+   （`CI`）で判定する。
 
-この検査は「テストが skip されなかったこと」を保証するものではなく「skip の原因となる
-前提の欠落が CI で起きないこと」を保証する。前者を直接保証する手段（skip 件数の表明）は
-pytest 移行後に `-p no:randomly --strict-markers` 等と併せて再検討しうるが、本仕様では
-前提検査に留める。
+opt-in のテスト（§5.E-3 の live 比較）は **skip ではなく deselect** で既定集合から外す。
+deselect は「実行対象に選ばれていない」であり、「選ばれたが前提不足で飛ばした」とは
+区別される。明示選択された live テストが前提不足に遭遇した場合は **fail** させる。
 
 ---
 
@@ -245,61 +280,58 @@ pytest 移行後に `-p no:randomly --strict-markers` 等と併せて再検討�
 #### 5.D-1 pytest + pytest-xdist への移行
 
 **方針**: 既存の `unittest.TestCase` 派生クラスは pytest がそのまま収集・実行するため、
-**テスト本体のコードは書き換えない**。追加するのは実行機構のみ。
+**テスト本体は書き換えない**。追加するのは実行機構のみ。
 
-- `requirements-dev.txt` に `pytest` と `pytest-xdist` を固定バージョンで記載する。
-- `pyproject.toml` に `[tool.pytest.ini_options]` を置き、`testpaths = ["tests"]` と
-  必要な `pythonpath` 設定を行う。`tests/__init__.py` と `from tests.helpers import ...`
-  という既存のパッケージ構成は維持する（rootdir 相対の import が壊れないため）。
-- CI の実行を `pytest -n auto --dist loadscope` に置き換える。`loadscope` を選ぶ理由は
-  F11 の測定がクラス単位の分割で成立していること、および各クラスの `setUp` が
-  重い（tempdir + fake bin 構築）ためテスト単位分割の利得が相対的に小さいこと。
+- `requirements-dev.txt` に `pytest` と `pytest-xdist` を固定バージョンで記載。
+- `pyproject.toml` に `[tool.pytest.ini_options]`（`testpaths = ["tests"]` ほか）。
+  `tests/__init__.py` と `from tests.helpers import ...` の既存構成は維持する。
+- CI の実行を `python3 -m pytest -n auto --dist loadscope` に置き換える。`loadscope` は
+  F11 がクラス単位分割で成立していること、および各クラスの `setUp` が重いことによる。
 
-**最重要論点 — F13 のビルド競合**:
+**ヘルパーのビルド（rev1 から全面変更）**
 
-`ensure_helper()` の `_HELPER_BUILT` は「1 プロセス 1 回」の保証しか与えない。xdist の
-ワーカーは独立プロセスであるため、N ワーカーが同時に `cargo build --release --locked` を
-起動する。cargo は `target/` ディレクトリロックを取るので**破損はしない**が、N-1 個の
-ワーカーが起動時にロック待ちで直列化し、並列化の利得を起動時に食い潰す。
+rev1 は「session スコープ autouse fixture の中で `workerinput` の有無を見て親だけビルド」
+という設計だった。**F13 の実測によりこれは動かない。** xdist の controller はテストを
+収集・実行せず session fixture も評価しない。評価するのは各 worker であり、全プロセスが
+worker 側の分岐へ入るため、clean checkout では誰もビルドしない。
 
-**設計**: ヘルパーのビルドをテスト実行の**前段**へ移し、ワーカーからは一切ビルドしない。
+あわせて rev1 が F13 として掲げていた「N worker が実ビルドで起動時に直列化し並列化利益を
+食い潰す」という主張を**撤回する**。これは未実測の推論だった。実際には
+`ensure_helper()` を呼ぶのは helper を使うクラスが配られた worker だけであり、CI では
+事前ビルド済みのため各 `cargo build` は通常 freshness check に留まる。
 
-- CI には既に「Build the release helper」ステップが存在する。これを pytest 実行の
-  前提と位置づける。
-- `tests/conftest.py` を新設し、session スコープの autouse フィクスチャでビルドを 1 度だけ
-  実行する。xdist 下では各ワーカーもこのフィクスチャを評価するため、`request.config` に
-  `workerinput` 属性が**無い**プロセス（＝親）でのみ実際のビルドを行い、ワーカーは成果物の
-  存在検証のみを行う。
-- `helpers.ensure_helper()` は「ビルドする」関数から「存在を検証し、無ければ何を実行すべきか
-  を示すエラーで落ちる」関数へ縮退させる。モジュールグローバル `_HELPER_BUILT` は削除する。
+**採用する設計**（最も単純な形）:
 
-> xdist の親プロセスがフィクスチャを評価しない構成（`-n` 指定時に collection のみ親で
-> 走る等）が判明した場合は、ファイルロックを用いた「最初に到達したワーカーがビルドし、
-> 他は待つ」方式へ切り替える。切り替えても受け入れ基準は変わらない（§9-3）。
-
-> この論点は実装中に初めて顕在化すると、原因が「なぜか並列化しても速くならない」という
-> 形でしか見えない。仕様段階で固定しておく価値が高い。
-
-**受け入れ条件**: 移行後の全 132 件が通ること、および実行時間が直列実行より有意に短い
-ことを実測で示すこと。目標値は設定しない（F11 の 47.5s は 4 クラス並列時の値であり、
-5.D-2 適用後の値は未測定のため）。
+- ビルドは **pytest の外**で行う。CI は `cargo build --release --locked` の既存ステップを
+  pytest 実行の前提とする。
+- `helpers.ensure_helper()` は「存在と実行可能性を検証し、無ければ何を実行すべきかを示す
+  エラーで落ちる」関数へ縮退させる。モジュールグローバル `_HELPER_BUILT` は削除する。
+- ローカル開発向けに、ビルドとテストを続けて実行する入口（`make test` 相当）を用意し、
+  README または `CONTRIBUTING` に記載する。
+- pytest 単独で自動ビルドする要件が将来生じた場合に限り、xdist 公式が案内する
+  **worker 間ファイルロック**方式を採る。本仕様では採らない。
 
 #### 5.D-2 固定待機の除去
 
-F12 に対して、`tests/mouse_pty.py` の `HslPty.__enter__` の `self._drain(3.0)` を
-readiness ポーリングへ置換する。
+F12 に対して `HslPty.__enter__` の `_drain(3.0)` を置換する。
 
-- **シグナル**: `INNER_APP` が起動直後に作成するログファイルの出現。パスは
-  `HslPty` の呼び出し側（`MouseIntegrationBase.runtime_env`）が既に `self.app_log` として
-  保持しているため、`HslPty` へ渡すだけでよい。
-- **実装**: 既存の `wait_for_*` と同じ deadline ループ形式を採り、上限は現行の固定値
-  より十分大きく取る（3.0s は「十分待つ」ための値であって上限ではないため、上限としては
-  短すぎる可能性がある）。上限超過時は明示的に失敗させる。
+**rev1 の設計は誤り**（codex 指摘 4）。`INNER_APP` は `open(log,"w").close()` を
+`tty.setraw(0)` と mouse tracking 出力の**前**に実行する。したがってログファイルの出現を
+readiness signal にすると、raw mode と tracking がまだ有効でない時点でクリック送出が
+始まりうる。固定 3 秒を消した代償に flake を導入することになる。
+
+**採用する設計**:
+
+- `INNER_APP` に**専用の ready marker** を追加する。作成位置は `tty.setraw(0)` と
+  tracking sequence の `flush()` の**後**。marker のパスは既存のログとは別に渡す。
+- `HslPty` は marker の出現を deadline 付きで待つ。
+- timeout 時は、PTY バッファの内容と子プロセスの状態をエラーメッセージに含めて失敗させる
+  （黙って進まない）。deadline は現行の 3.0s より十分大きく取る。3.0s は「十分待つ」ための
+  値であって上限ではないため、上限としては短すぎる可能性がある。
 - **`_send` の settle は据え置く。** `test_clicking_outside_every_range_does_nothing` の
-  ように「反応が*無い*こと」を確認するテストが存在し、これらは本質的に時間で待つ以外の
-  方法が無い。ここを削ると偽陽性を生む。
+  ように「反応が*無い*こと」を確認するテストは、本質的に時間で待つ以外の方法がない。
 
-削減効果の大半は起動時の 3 秒側にある。この点は誇張せず仕様に明記する。
+削減効果の大半は起動時の 3 秒側にある。この点は誇張しない。
 
 ---
 
@@ -307,82 +339,80 @@ readiness ポーリングへ置換する。
 
 #### 5.E-1 README への mouse_clicks 節
 
-F18 に対して、README に節を追加する。含める内容:
+F18 に対して README に節を追加する。内容: opt-in であることと代償（外側端末のネイティブ
+選択とミドルクリック貼り付けを失う）、tmux 3.4 以上、`on-click.sh` が本プラグインの
+提供物では**ない**こと、フックの 4 引数契約、詳細の所在。
 
-- opt-in であること、および代償（外側端末のネイティブ選択とミドルクリック貼り付けを失う）
-- tmux 3.4 以上が必要であること
-- `on-click.sh` が本プラグインの提供物では**ない**こと。フックはユーザーまたは別プラグイン
-  が所有する
-- フックの 4 引数の契約
-- 詳細は `config.toml` のコメントと同梱スキルにあること
-
-`scripts/default-config.toml` のコメントと重複する記述になるが、README は「導入前の利用者」、
-config コメントは「導入後の編集者」を読者とするため、要約と詳細という関係で共存させる。
+`scripts/default-config.toml` のコメントと重複するが、README は「導入前の利用者」、
+config コメントは「導入後の編集者」を読者とするため、要約と詳細として共存させる。
 
 #### 5.E-2 `--hsl-check-config`
 
-F17 に対して、`hsl` に設定検証の導線を追加する。
-
 **形式**: `hsl --hsl-check-config [<config.toml のパス>]`
 
-**`--hsl-` 接頭辞を採る理由**: herdr 0.8.0 のグローバルオプションは `--session` /
-`--remote` / `--no-session` / `--handoff` / `--remote-keybindings` / `--default-config` /
-`--skill` / `--version` / `-V` / `--help` / `-h` である。`--hsl-` 接頭辞は herdr 側の
-命名規則と構造的に交わらないため、将来 herdr が何を追加しても衝突しない。サブコマンド形式
-（`hsl doctor` 等）は人間にとって読みやすいが、herdr のサブコマンド名前空間を 1 語占有する
-リスクを負う。エージェント向けの検証導線であり、衝突不能性を可読性より優先する。
+**接頭辞の根拠（rev1 から表現を弱める。codex 指摘 8）**: herdr 0.8.0 のグローバルは
+`--session` / `--remote` / `--no-session` / `--handoff` / `--remote-keybindings` /
+`--default-config` / `--skill` / `--version` / `-V` / `--help` / `-h`。`--hsl-` 接頭辞は
+これらと交わらず、herdr が同じ接頭辞を採る動機も薄い。ただし
+**「何を追加しても衝突しない」とは言えない**——それは herdr 側の将来の命名に対する保証で
+あり、本リポジトリが与えられるものではない。正しくは「衝突可能性を大きく下げる予約接頭辞」
+である。サブコマンド形式（`hsl doctor` 等）より衝突可能性が低いことが採用理由。
 
-**実装位置**: `scripts/launcher-body.sh` が `uninstall` を横取りしているのと同じ位置。
-launcher は `PLUGIN_ROOT` を既に解決済みであるため、`$PLUGIN_ROOT/target/release/hsl-config`
-へ委譲できる。引数を省略した場合は `herdr plugin config-dir herdr-statusline` を解決して
-その `config.toml` を対象とする。
+**CLI 契約**（rev1 は未定義。AC-E2-1〜5 で検証）:
 
-**`root_is_complete` との関係**: 既存の launcher は不完全なインストールを検出して再解決
-する経路を持つ。`--hsl-check-config` もこの経路の**後**で処理する（`uninstall` と同じ）。
+| 項目 | 仕様 |
+| --- | --- |
+| 引数 0 個 | `herdr plugin config-dir herdr-statusline` を解決し、その `config.toml` を検査する |
+| 引数 1 個 | そのパスを検査する。herdr の呼び出しを要さない |
+| 引数 2 個以上 | usage を stderr へ出し、exit 2 |
+| 成功時 | stdout へ何も出さない。exit 0 |
+| 検査失敗時 | `hsl-config` のエラーを stderr へ通し、exit 2 |
+| config 不在時 | 「見つからない」旨を stderr へ出し、exit 2（作成はしない） |
+| 実装位置 | `scripts/launcher-body.sh` の `uninstall` と同じ位置。`root_is_complete` による再解決の**後** |
+| stale root の rewrite | 行わない（`mode = run` のときのみ rewrite する既存挙動を変えない） |
 
-**SKILL.md の更新**: F17 の 3 ステップ手順を `hsl --hsl-check-config` の 1 行へ差し替える。
+**SKILL.md の更新**: F17 の 3 ステップ手順をこの 1 行へ差し替える。
 
-**テスト**: `tests/test_launcher.py` に、正常な config で成功し、壊れた config で非ゼロ終了
-することを確認するテストを追加する。既存の fake herdr / fake bin 機構を使う。
+#### 5.E-3 herdr CLI 契約テスト
 
-#### 5.E-3 herdr CLI ドリフト検出
+**rev1 の設計は問題を解決していない**（codex 指摘 3）。固定 fixture は「コードが既知の
+0.8.0 出力と整合すること」しか検査せず、fixture 自体が古くなったことは検出できない。
+live 比較を既定集合から外せば、上流の drift は永遠に CI を失敗させない。さらに F26 の通り
+`herdr --help` は絶対パスを含むため、raw 出力の完全一致は別ユーザー環境で必ず失敗する。
+「選んだ help だけから attach は 3 種類だけと証明する」のも循環的である。
 
-F16 に対する対処だが、**§4-2 の「黙る失敗を作らない」と正面衝突する**。herdr は CI に
-存在しないため、実バイナリを叩くテストは CI で必ず skip され、§5.C-3 で禁じたばかりの
-経路を再導入してしまう。
+**採用する設計 — 3 層**:
 
-**設計 — 2 段構え**:
+1. **契約テスト（CI で常時実行、herdr 不要）**: `bin/hsl-internal` の `is_interactive()` を
+   **argv 行列**に対して実行し、各入力の分類結果（wrap するか pass-through するか）を
+   表明する。行列には herdr 0.7.5 と 0.8.0 の双方で意味を持つ形——`--skill`、`--handoff`、
+   `--remote-keybindings` の分離形・結合形、`session|agent|terminal attach`、
+   `--session=` / `--session ` の両形、終端グローバル——を含める。これは help 出力に
+   依存しないため常に走り、skip されない。**これが drift に対する主たる防御である。**
+2. **正規化 snapshot（CI で常時実行、herdr 不要）**: `herdr --help` の出力から絶対パス・
+   末尾空白・折返しを正規化した fixture をコミットし、そこから抽出した
+   「グローバルオプション集合」「`attach` を持つサブコマンド集合」を表明する。
+   **名称は "0.8.0 compatibility snapshot" とし、"drift detection" とは呼ばない。**
+3. **live 比較（opt-in）**: 実 `herdr` の出力を同じ正規化にかけ、snapshot と比較する。
+   既定集合からは **deselect** する。明示選択されたうえで herdr が不在なら **skip せず
+   fail** させる（§5.C-3 の規律）。
 
-1. **記録フィクスチャに対するテスト（CI で常時実行）**: `herdr --help` および
-   関連サブコマンドの `--help` 出力を `tests/fixtures/` へコミットする。分類器が前提と
-   している性質——「`attach` を持つサブコマンドは `session` / `agent` / `terminal` の 3 つ」
-   「グローバルオプションの集合」——を、この記録に対して表明する。herdr の有無に依存しない
-   ため CI で常に走り、skip されない。
-2. **実バイナリとの差分テスト（opt-in）**: 記録フィクスチャと実 `herdr --help` の出力を
-   比較する。herdr が無ければ skip されるが、これは**明示的な opt-in**（環境変数または
-   pytest マーカーで選択）とし、既定の実行集合には含めない。「既定で走るが黙って skip される」
-   という状態を作らないことが要点である。
-
-この構造により、CI は「分類器が記録された CLI と整合していること」を常に検証し、開発者は
-herdr 更新時に「記録が実物と乖離していないこと」を意図的に検証できる。フィクスチャ更新の
-手順は CONTRIBUTING 相当の記述として README または `docs/` に残す。
-
-**フィクスチャの版**: herdr 0.8.0 の出力を記録する。F14・F15 は本仕様策定時に手動確認済み
-であり、その確認内容がフィクスチャとして固定される。
+> 未解決として §8-6 に記す: 上流 drift を CI が自動検知するには、scheduled または release
+> ワークフローで herdr を取得して層 3 を必須実行する必要がある。本仕様では層 1 を主たる
+> 防御と位置づけ、層 3 の自動実行は対象外とする。
 
 ---
 
 ### 5.F リポジトリ衛生
 
-F19 に対して、`.gitignore` に `/.claude/worktrees/` を追加する。
+F19 に対して `.gitignore` に `/.claude/worktrees/` を追加する。
 
 `EnterWorktree` はリポジトリ内の `.claude/worktrees/<name>` に作業ツリーを作成する。
-`.claude/` が無視対象でないため、親チェックアウトでこのディレクトリが未追跡として現れ、
-不用意な `git add -A` の対象になりうる。
+`.claude/` が無視対象でないため、親チェックアウトでこのディレクトリが未追跡として現れる。
 
-**`.claude/` 全体ではなく `worktrees/` のみに限定する。** `.claude/settings.json` など、
-将来リポジトリで共有したくなる設定が同じ階層に置かれうるため、それらは追跡可能なまま
-残す。既存の `/target` と同じくリポジトリ直下限定を意図するため `/` を前置する。
+**`.claude/` 全体ではなく `worktrees/` のみに限定する。** `.claude/settings.json` など将来
+リポジトリで共有したくなる設定を追跡可能なまま残すため。既存の `/target` と同じく直下限定
+を意図して `/` を前置する。
 
 ---
 
@@ -390,83 +420,104 @@ F19 に対して、`.gitignore` に `/.claude/worktrees/` を追加する。
 
 ```
 F (.gitignore)  ──┐
-                  │
 A (git lock)  ────┼──▶ 独立、順不同
-B (配布物)     ────┤
-E-1 (README)  ────┘
+B-1 LICENSE   ────┤
+B-2 CHANGELOG ────┤
+E-1 README    ────┘
 
-C-1 (shellcheck) ──┐
-C-2 (workflow)   ──┼──▶ 同一ファイル (.github/workflows/ci.yml) を編集するため直列化
-C-3 (前提検査)    ──┤
-D-1 (pytest)     ──┘   ※ D-1 は CI の実行コマンドを差し替えるため C と同じファイルに触る
+C-2 (workflow 整備) ──▶ C-1 (shellcheck) ──▶ C-3 (skip 禁止) ──▶ D-1 (pytest)
+                    └──▶ B-3 (タグ + fetch-depth) ──▶ B-4 (MSRV pin ジョブ)
 
-D-2 (固定待機)  ──▶ D-1 と独立（tests/mouse_pty.py のみ）だが、効果測定は D-1 の後
-
+D-2 (ready marker) ──▶ D-1 と独立（tests/mouse_pty.py のみ）。効果測定は D-1 の後
 E-2 (--hsl-check-config) ──▶ 独立
-E-3 (ドリフト検出)        ──▶ C-3 の方針確定後（skip 方針が前提）
+E-3 (契約テスト) ──▶ C-3 の後（deselect / fail 方針が前提）
 ```
 
-**直列化が必要な唯一の集合は C-1 / C-2 / C-3 / D-1** である。いずれも
-`.github/workflows/ci.yml` を編集するため、並行実装すると衝突する。実装計画ではこの 4 件を
-1 本の系列として扱う。
-
-B-4（MSRV）は C-2（CI 整備）の後に置くと、追加する pin ジョブが整備済みのワークフロー上に
-乗るため手戻りが少ない。
+`.github/workflows/ci.yml` を編集するのは C-1 / C-2 / C-3 / D-1 / B-3 / B-4 の 6 件。
+並行実装すると衝突するため、**1 本の系列**として扱う。C-2 を先頭に置くのは、以降の追加が
+整備済みのワークフロー上に乗り手戻りが減るため。
 
 ---
 
-## 7. テスト戦略の総括
+## 7. 受入基準
 
-新規に追加するテストは以下。既存 132 件は 1 件も削除しない。
+各項目に AC ID を与える。すべて「コマンド / 期待される結果」で客観判定できる形にした
+（codex 指摘 6）。
 
-| 対象 | テスト | 実行環境 |
-| --- | --- | --- |
-| §5.A | git shim による `GIT_OPTIONAL_LOCKS=0` の記録検証 | CI（実 git のみ必要） |
-| §5.B-3 | タグの存在と `herdr-plugin.toml` の version との対応（`test_consistency.py` を拡張） | CI |
-| §5.B-4 | MSRV に pin した build + test ジョブ | CI（別ジョブ） |
-| §5.E-2 | `--hsl-check-config` の正常系・異常系 | CI |
-| §5.E-3 | 記録フィクスチャに対する分類器の性質表明 | CI（常時） |
-| §5.E-3 | 実 herdr との差分 | opt-in のみ |
+### 全体
 
-`test_consistency.py` の既存 4 件が担っている「物理的に単一化できない定数の一致」という
-役割は維持する。タグ検証を同ファイルに置くのが妥当かは実装時に判断する（タグは
-ワーキングツリーの内容ではないため、別ファイルが適切な可能性がある）。
+| AC | 内容 |
+| --- | --- |
+| AC-G-1 | `cargo fmt --check` が exit 0 |
+| AC-G-2 | `cargo clippy --all-targets --all-features -- -D warnings` が exit 0 |
+| AC-G-3 | `cargo test --locked` が exit 0、失敗 0 件 |
+| AC-G-4 | `python3 -m pytest -n auto --dist loadscope` が exit 0、132 件以上が pass、skip 0 件 |
+| AC-G-5 | 並列実行の所要時間の**中央値（5 回測定、同一マシン、他の負荷なし）が、直列実行 `python3 -m pytest -p no:xdist` の中央値の 75% 以下** |
+
+### ワークストリーム別
+
+| AC | 内容 |
+| --- | --- |
+| AC-A1-1 | `scripts/default-herdr-info.sh` が `GIT_OPTIONAL_LOCKS=0` を export している |
+| AC-A1-2 | 記録 shim テストが pass。ambient に `GIT_OPTIONAL_LOCKS=1` を置いた状態で、記録行が 1 行以上あり全行が `0` |
+| AC-A1-3 | 同テストを `export` 行を除いたスクリプトに対して実行すると**失敗する**（red 確認） |
+| AC-B1-1 | `LICENSE` が存在し、1 行目に `MIT License`、著作権行を含む |
+| AC-B1-2 | `Cargo.toml` の `license` が `MIT` であり、README のバッジ URL が MIT を指す |
+| AC-B2-1 | `CHANGELOG.md` が存在し、`[Unreleased]` / `0.1.2` / `0.1.0` の 3 見出しを持ち、`0.1.1` を**含まない** |
+| AC-B3-1 | `git tag` が `v0.1.0` と `v0.1.2` の 2 本のみを出力する |
+| AC-B3-2 | 各タグの ref で `herdr-plugin.toml` / `Cargo.toml` / `Cargo.lock` の版が一致し、`cargo build --release --locked` が exit 0 |
+| AC-B3-3 | タグ検証を行う CI ジョブの `actions/checkout` に `fetch-depth: 0` が指定されている |
+| AC-B4-1 | `Cargo.toml` に `rust-version = "1.85"` がある |
+| AC-B4-2 | 1.85 に pin した CI ジョブで `cargo build --release --locked` と `cargo test --locked` が exit 0 |
+| AC-B5-1 | `$bindir` が `PATH` に無い状態で `build.sh` を実行すると stderr に警告が出て、**exit 0** のまま |
+| AC-B5-2 | `$bindir` が `PATH` にある状態では警告が出ない |
+| AC-C1-1 | CI の shellcheck ステップが exit 0 |
+| AC-C1-2 | 抑制指示は SC2329 のみ。`# shellcheck disable=SC1007`／`SC1083`／`SC1090` がリポジトリ内に**存在しない** |
+| AC-C1-3 | 書き換え後、`bin/hsl-internal` と `scripts/run-in-tmux` に対する既存 Python テスト（`test_hsl_internal.py` / `test_tmux_runtime.py` の全件）が pass。これをもって振る舞い同一とみなす |
+| AC-C1-4 | shellcheck の対象ファイル集合が `sh -n` ステップの集合と文字列一致 |
+| AC-C2-1 | ワークフローに `permissions: contents: read` がある |
+| AC-C2-2 | PR ブランチへの push で起動するワークフロー実行が 1 件（二重実行しない） |
+| AC-C2-3 | cargo キャッシュと `actions/setup-python` + `pip install -r requirements-dev.txt` がある |
+| AC-C3-1 | tmux を PATH から外した状態で CI 相当のステップを実行すると**非ゼロ終了**する |
+| AC-C3-2 | 任意のテストに `@unittest.skip` を一時的に付けて `CI=1` で実行すると、セッションが**失敗**する |
+| AC-C3-3 | live-herdr テストは既定実行で **deselect** され、skip として計上されない |
+| AC-D1-1 | `helpers.py` に `_HELPER_BUILT` が存在せず、`ensure_helper()` が `cargo` を呼ばない |
+| AC-D1-2 | helper 未ビルドの状態で pytest を実行すると、何を実行すべきかを示すエラーで落ちる |
+| AC-D1-3 | `requirements-dev.txt` と `pyproject.toml` の `[tool.pytest.ini_options]` が存在する |
+| AC-D2-1 | `INNER_APP` の ready marker 作成が `flush()` の**後**にある |
+| AC-D2-2 | `HslPty.__enter__` に `_drain(3.0)` 相当の無条件固定待機が無い |
+| AC-D2-3 | marker が現れない状況で `__enter__` が timeout し、PTY バッファ内容を含むエラーで失敗する |
+| AC-D2-4 | `test_tmux_mouse.py` 全 12 件が 5 回連続で pass（flake が入っていないことの確認） |
+| AC-E1-1 | README に `mouse_clicks` の節があり、tmux 3.4 要件・代償・`on-click.sh` が非提供物であることの 3 点を含む |
+| AC-E2-1 | `hsl --hsl-check-config` が正常な config に対し exit 0、stdout 空 |
+| AC-E2-2 | 壊れた config に対し exit 2、stderr にエラー |
+| AC-E2-3 | 明示パス指定時、herdr を PATH から外しても動作する |
+| AC-E2-4 | 引数 2 個以上で usage を出し exit 2 |
+| AC-E2-5 | config 不在時 exit 2 で、ファイルを作成しない |
+| AC-E2-6 | `SKILL.md` に `plugin_root` を parse させる記述が残っていない |
+| AC-E3-1 | argv 行列の契約テストが herdr 不在環境で pass する（skip しない） |
+| AC-E3-2 | snapshot fixture が正規化済みで、絶対パスを含まない |
+| AC-E3-3 | live 比較テストを明示選択し herdr が不在なら **fail** する（skip しない） |
+| AC-F-1 | `git check-ignore .claude/worktrees` が一致し、`git check-ignore .claude/settings.json` が一致しない |
 
 ---
 
-## 8. 受け入れ基準
+## 8. 判断の記録と未解決点
 
-1. `cargo fmt --check`・`cargo clippy --all-targets --all-features -- -D warnings`・
-   `cargo test` が無指摘で通る。
-2. Python テストが全件通り、実行時間が移行前（111.7s）より有意に短い。
-3. shellcheck が CI で通り、抑制指示はすべて理由付きで、対象は `sh -n` の対象集合と一致する。
-4. tmux または `script` が欠けた環境で CI が**失敗する**（skip して緑にならない）。
-5. `LICENSE` が存在し、`Cargo.toml` の `license` と README のバッジと矛盾しない。
-6. `git tag` が `v0.1.0` / `v0.1.1` / `v0.1.2` を含み、`--ref v0.1.2` での取得が成立する。
-7. `rust-version` が宣言され、その値に pin した CI ジョブが通る。
-8. `hsl --hsl-check-config` が壊れた `config.toml` に対して非ゼロ終了する。
-9. SKILL.md に `plugin_root` を parse させる記述が残っていない。
-10. README に `mouse_clicks` の節が存在する。
-11. 中核ロジック（§2 非対象に列挙したファイル・関数）に差分が無い。
-
----
-
-## 9. 判断の記録と未解決点
-
-1. **バージョン bump 自動化を非対象とした。** F22 のとおり同期漏れは実際に発生しており、
-   `scripts/bump-version.sh` を作る根拠はあった。利用者判断により「タグ + CHANGELOG のみ」
-   を採用。`test_consistency.py` が同期の**検査**を担い続けるため、漏れは検知はされる
-   （実行されるのは CI 上であり、bump 時点ではない）。
-2. **MSRV の値が未確定。** F20 のとおり未測定であり、§5.B-4 の手順で実装時に確定させる。
-   確定値が現行の CI ランナーの stable より大きく古い場合、pin ジョブの追加が CI 時間を
-   押し上げる点は許容する。
-3. **`ensure_helper` のビルド前段化は、xdist の親子プロセス判定に依存する。** §5.D-1 では
-   `workerinput` の有無による親判定を採用したが、この属性の有無は xdist の実行構成に
-   依存する実装詳細である。実装時に想定どおり動かない場合はファイルロック方式へ
-   切り替える。いずれの方式でも受け入れ基準 2 は変わらない。
-4. **`_send` の settle を残す判断。** §5.D-2 のとおり「反応が無いこと」を待つテストが
-   存在するため据え置いた。将来、否定的表明を別の機構（tmux 側のイベントカウンタ等）で
-   置き換えられれば削減余地があるが、本仕様では扱わない。
-5. **`status_interval = 1` の既定値そのものは触らない。** §5.A は lock 競合のみを解く。
-   毎秒 `git status` を実行する構成の是非（大規模リポジトリでの負荷）は残る課題であり、
-   §5.E-1 / config コメントでの注意喚起に留めるか、別件で扱う。
+1. **バージョン bump 自動化は非対象。** 同期漏れは実際に発生している（`16bd1b7`）が、
+   利用者判断により「タグ + CHANGELOG のみ」を採用。`test_consistency.py` が検査を担い
+   続けるため漏れは CI で検知される（bump 時点ではない）。
+2. **MSRV は「最小」ではなく「サポートする最小 stable」。** F25 の通り 1.85 未満は未検証。
+   下げるには古い toolchain の導入と「直前 stable が落ちる」証拠が必要（§5.B-4）。
+3. **`_send` の settle を残した。** §5.D-2 の通り「反応が無いこと」を待つテストがあるため。
+   将来 tmux 側のイベントカウンタ等で否定的表明を置き換えられれば削減余地がある。
+4. **`status_interval = 1` 既定値は触らない。** §5.A は lock 競合のみを解く。毎秒
+   `git status` を実行する構成の是非は残る課題であり、注意喚起に留めるか別件で扱う。
+5. **AC-G-5 の 75% という閾値は目標値であって実測の裏付けはない。** F11（4 クラス並列で
+   77.5s → 47.5s、61%）から外挿した値。5.D-2 適用後の全体値は未測定。実装時に達成できない
+   場合は、閾値ではなく実測値を記録して再判断する。
+6. **上流 herdr の drift を CI が自動検知しない。** §5.E-3 の層 3 を必須実行するには
+   scheduled / release ワークフローで herdr を取得する必要があり、本仕様の対象外とした。
+   層 1（argv 行列の契約テスト）が主たる防御であり、これは help 出力に依存しないため
+   herdr の更新そのものでは壊れない。壊れるのは herdr の**振る舞い**が変わったときであり、
+   その検知は層 3 を要する。
