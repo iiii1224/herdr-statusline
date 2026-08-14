@@ -22,6 +22,15 @@
 - **黙った skip を作らない。** 新設する検証も同じ規律に従う。既定集合から外すものは skip ではなく deselect にする。
 - **著作権表記は `Copyright (c) 2026 IIAD Yusuke`。**
 - **`herdr --help` は全 top-level subcommand を列挙しない**（`plugin` が現れない）。help 解析から網羅性を主張しない。
+- **`target/release/hsl-config` は追跡されないビルド成果物である。** Task 6 以降、
+  `ensure_helper()` は自動ビルドしない。したがって **Task 6 より後のタスクで pytest を
+  走らせる検証は必ず `make build &&` を前置すること。** コミットだけを受け取った
+  エージェントの作業ツリーには成果物が存在せず、変更内容と無関係に落ちる。
+- **期待される失敗を `; echo "exit=$?"` で観測しないこと。** それでは全体が exit 0 になり、
+  「期待どおり失敗した」と「期待に反して成功した」が区別できない。
+  `if cmd; then echo FAIL; exit 1; fi` の形を使う。
+- **外向きの不可逆操作（`git push` を含む）を実行しないこと。** 実行エージェントは確認を
+  取る手段を持たない。該当箇所は operator への引き継ぎとして報告し、実行しない。
 
 ## ファイル構成
 
@@ -111,7 +120,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.2] - 2026-08-10
+## [0.1.2] - 2026-08-12
 
 ### Added
 
@@ -137,8 +146,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `hsl` launcher installed to `~/.local/bin`, with `hsl uninstall [--purge]`.
 ```
 
-> 日付は各コミットの author date に合わせて実装時に確認する:
-> `git show -s --format=%as 0622df4` と `git show -s --format=%as 16bd1b7`。
+> 日付は確定済み。`git show -s --format=%as` の実測で `0622df4` が `2026-08-01`、
+> `16bd1b7` が `2026-08-12`。上のとおり書けばよく、確認は不要。
 
 - [ ] **Step 4: .gitignore に worktree ディレクトリを足す**
 
@@ -153,8 +162,16 @@ __pycache__/
 
 - [ ] **Step 5: 無視規則を確認**
 
-Run: `git check-ignore -v .claude/worktrees && git check-ignore .claude/settings.json; echo "settings exit=$?"`
-Expected: `.claude/worktrees` は一致する。`.claude/settings.json` は一致せず `exit=1`。
+```bash
+git check-ignore -q .claude/worktrees \
+    || { echo "FAIL: the worktree directory is not ignored"; exit 1; }
+if git check-ignore -q .claude/settings.json; then
+    echo "FAIL: .claude/ was ignored wholesale; only worktrees/ should be"
+    exit 1
+fi
+echo "OK: worktrees ignored, the rest of .claude tracked"
+```
+Expected: `OK: worktrees ignored, the rest of .claude tracked`。
 
 - [ ] **Step 6: Commit**
 
@@ -392,13 +409,38 @@ jobs:
 > `pull_request` イベントだけを起こす。`cargo test` に `--locked` を足したのは
 > 依存条件を build と揃えるため（仕様 §5.B-4）。
 
-- [ ] **Step 2: YAML が読めることを確認**
+- [ ] **Step 2: 変更が実際に入っていることを構造的に確認**
 
-Run: `python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/ci.yml'))" && echo OK`
-Expected: `OK`
+**単なる YAML パースでは不十分。** 変更前の古いワークフローもパースは通るため、
+「変更が入っていない」場合と区別できない。値を表明すること。
 
-> `yaml` が無ければ `python3 -m pip install --user pyyaml` するか、この確認は飛ばして
-> push 後の GitHub 側の解釈に委ねてよい。
+```bash
+python3 - <<'PY'
+import sys, yaml
+w = yaml.safe_load(open(".github/workflows/ci.yml"))
+problems = []
+if w.get("permissions") != {"contents": "read"}:
+    problems.append(f"permissions is {w.get('permissions')!r}")
+# PyYAML parses the bare key `on` as the boolean True.
+trigger = w.get("on", w.get(True))
+if trigger.get("push", {}).get("branches") != ["master"]:
+    problems.append(f"push trigger is {trigger.get('push')!r}")
+if "pull_request" not in trigger:
+    problems.append("no pull_request trigger")
+if "concurrency" not in w:
+    problems.append("no concurrency group")
+steps = w["jobs"]["test"]["steps"]
+uses = [s.get("uses", "") for s in steps]
+for needed in ("Swatinem/rust-cache", "actions/setup-python"):
+    if not any(u.startswith(needed) for u in uses):
+        problems.append(f"missing {needed}")
+if problems:
+    sys.exit("ci.yml: " + "; ".join(problems))
+print("OK")
+PY
+```
+Expected: `OK`。`pyyaml` が無ければ `python3 -m pip install --user pyyaml` を先に実行する。
+この確認は飛ばさないこと。
 
 - [ ] **Step 3: Commit**
 
@@ -497,13 +539,29 @@ remove_status_options() {
 
 - [ ] **Step 7: shellcheck が通ることを確認**
 
-Run: `shellcheck -s sh bin/hsl-internal scripts/build.sh scripts/install-launcher.sh scripts/lib/shell-quote.sh scripts/launcher-body.sh scripts/run-in-tmux scripts/default-herdr-info.sh; echo "exit=$?"`
-Expected: `exit=0`、出力なし。
+```bash
+shellcheck -s sh bin/hsl-internal scripts/build.sh scripts/install-launcher.sh \
+    scripts/lib/shell-quote.sh scripts/launcher-body.sh scripts/run-in-tmux \
+    scripts/default-herdr-info.sh
+echo "shellcheck clean"
+```
+Expected: `shellcheck clean`、それ以外の出力なし、終了コード 0。
 
 - [ ] **Step 8: 抑制が SC2329 のみであることを確認（AC-C1-2）**
 
-Run: `grep -n 'shellcheck disable' bin/hsl-internal scripts/build.sh scripts/install-launcher.sh scripts/lib/shell-quote.sh scripts/launcher-body.sh scripts/run-in-tmux scripts/default-herdr-info.sh`
-Expected: 3 行、すべて `SC2329`。
+```bash
+set -eu
+found=$(grep -ho 'shellcheck disable=[A-Z0-9,]*' \
+    bin/hsl-internal scripts/build.sh scripts/install-launcher.sh \
+    scripts/lib/shell-quote.sh scripts/launcher-body.sh scripts/run-in-tmux \
+    scripts/default-herdr-info.sh | sort -u)
+[ "$found" = "shellcheck disable=SC2329" ] || {
+    echo "unexpected suppression codes: $found"
+    exit 1
+}
+echo "only SC2329 is suppressed"
+```
+Expected: `only SC2329 is suppressed`。
 
 - [ ] **Step 9: 振る舞いが変わっていないことを確認（AC-C1-3）**
 
@@ -576,7 +634,11 @@ pythonpath = ["."]
 
 - [ ] **Step 3: ensure_helper を縮退させる失敗テストを書く**
 
-`tests/test_build.py` に追加する（helper の契約を検査する場所として最も近い）。
+`tests/test_build.py` に追加する。`import unittest.mock` を import に足す。
+
+**⚠️ ソース文字列の grep で検査しないこと。** 新しい `ensure_helper` のエラーメッセージ自体に
+`cargo build --release --locked` という案内文が入るため、「helpers.py に `cargo` が現れない」
+という表明は実装後も**永久に赤のまま**になる。振る舞いを mock で検査する。
 
 ```python
     def test_ensure_helper_does_not_build(self):
@@ -587,23 +649,42 @@ pythonpath = ["."]
         from tests import helpers
 
         self.assertFalse(hasattr(helpers, "_HELPER_BUILT"))
-        source = (ROOT / "tests/helpers.py").read_text()
-        self.assertNotIn("cargo", source)
+        with unittest.mock.patch.object(helpers.subprocess, "run") as run:
+            helpers.ensure_helper()
+        run.assert_not_called()
+
+    def test_ensure_helper_says_what_to_run_when_the_binary_is_absent(self):
+        # AC-D1-2. A worker that starts without the artifact must not fail
+        # with a bare FileNotFoundError three frames deep.
+        from tests import helpers
+
+        with unittest.mock.patch.object(helpers.os, "access", return_value=False):
+            with self.assertRaises(RuntimeError) as caught:
+                helpers.ensure_helper()
+        self.assertIn("make test", str(caught.exception))
 ```
 
 - [ ] **Step 4: テストが失敗することを確認**
 
-Run: `python3 -m unittest tests.test_build.BuildTests.test_ensure_helper_does_not_build -v`
-Expected: FAIL。`_HELPER_BUILT` が存在する。
+Run: `make build && python3 -m pytest tests/test_build.py -k ensure_helper -p no:xdist -q`
+Expected: 2 件とも FAIL。`_HELPER_BUILT` が存在し、`ensure_helper` が `subprocess.run` を呼ぶ。
 
 - [ ] **Step 5: helpers.ensure_helper を書き換える**
 
-`tests/helpers.py` の `HELPER` 定義以降を差し替える。`import subprocess` は `write_protocol` が使い続けるので残す。
+**⚠️ 置換範囲は `_HELPER_BUILT` の定義と `ensure_helper()` の本体だけ。** `write_protocol()`
+はこの下に続いており、**消してはならない**。消すと `test_tmux_runtime.py` と
+`test_tmux_mouse.py` の import が壊れる。`import subprocess` も `write_protocol` が使い続ける
+ので残す。
+
+削除するのは以下の 2 行と、続く `ensure_helper` の関数定義全体。
 
 ```python
-HELPER = ROOT / "target/release/hsl-config"
+_HELPER_BUILT = False
+```
 
+置き換え後の `ensure_helper`:
 
+```python
 def ensure_helper():
     """Return the release helper's path, failing with what to run if absent.
 
@@ -615,17 +696,22 @@ def ensure_helper():
     if not os.access(HELPER, os.X_OK):
         raise RuntimeError(
             f"{HELPER} is missing or not executable.\n"
-            "Run `make test`, or `cargo build --release --locked` first."
+            "Run `make test`, or build it directly, before running pytest."
         )
     return HELPER
 ```
 
-`import os` は既にファイル先頭にある。
+`import os` は既にファイル先頭にある。`HELPER = ROOT / "target/release/hsl-config"` と
+`write_protocol()` はそのまま残す。
 
-- [ ] **Step 6: テストが通ることを確認**
+- [ ] **Step 6: write_protocol が残っていること、全体が通ることを確認**
 
-Run: `cargo build --release --locked && python3 -m unittest tests.test_build -v`
-Expected: すべて PASS。
+Run: `rtk proxy grep -c 'def write_protocol' tests/helpers.py`
+Expected: `1`。0 なら Step 5 で消しすぎている。
+
+Run: `make build && python3 -m pytest tests/test_build.py tests/test_tmux_runtime.py -p no:xdist -q`
+Expected: すべて PASS。`ensure_helper` の直接呼び出しは `test_hsl_internal.py` と
+`test_launcher.py` にもあるため、それらも壊れていないことを次の Step 8 で確認する。
 
 - [ ] **Step 7: ローカル実行の入口を作る（AC-D1-4）**
 
@@ -655,13 +741,24 @@ Expected: 132 件以上が PASS。
 
 - [ ] **Step 9: 直列と並列の所要時間を測る（AC-G-5 の下準備）**
 
-Run:
+ここは**基準値の採取のみ**。AC-G-5 の合否判定は Task 8 完了後の完了検証で行う
+（Task 8 が固定待機を除去するまで最終的な数字にならないため）。
+
+パイプの終了コードは `tail` のものになるので、成功を先に保証してから時間を採る。
+
 ```bash
-for i in 1 2 3 4 5; do /usr/bin/time -f "%e" make test 2>&1 | tail -1; done
-for i in 1 2 3 4 5; do /usr/bin/time -f "%e" make test-serial 2>&1 | tail -1; done
+set -eu
+for i in 1 2 3 4 5; do
+    /usr/bin/time -f "%e" -o "/tmp/hsl-base-par-$i.time" make test >/dev/null
+done
+for i in 1 2 3 4 5; do
+    /usr/bin/time -f "%e" -o "/tmp/hsl-base-ser-$i.time" make test-serial >/dev/null
+done
+echo "parallel median: $(cat /tmp/hsl-base-par-*.time | sort -n | sed -n '3p')"
+echo "serial median:   $(cat /tmp/hsl-base-ser-*.time | sort -n | sed -n '3p')"
 ```
-Expected: 並列の中央値が直列の中央値の 75% 以下。満たさない場合は数値を記録し、
-仕様 §8-5 の通り閾値ではなく実測値で再判断する（Task 8 の後に再測定する）。
+Expected: 双方の中央値が表示され、全 10 回の実行が成功している（`set -e` により
+1 回でも失敗すれば止まる）。数値はこの時点では記録するだけでよい。
 
 - [ ] **Step 10: CI を pytest に切り替える**
 
@@ -714,37 +811,75 @@ git commit -m "test: run the suite under pytest-xdist and build the helper up fr
 - Consumes: Task 6 の `pyproject.toml` と CI の pytest ステップ
 - Produces: `live_herdr` マーカー。Task 10 の live 比較テストがこれを付ける。
 
+> **Task 6 の直後に実行すること。** Task 6 で CI が pytest に切り替わってから
+> Task 7 で skip 禁止が入るまでの間、CI は skip を黙認する状態にある。ブランチは
+> 全タスク完了まで merge されないので出荷には影響しないが、この 2 つを離すと
+> 「skip を黙認する CI」が長く残る。
+
 - [ ] **Step 1: 失敗するテストを書く**
 
-`tests/test_build.py` に追加する。
+`tests/test_build.py` に追加する。`import sys` を import に足す。
+
+**⚠️ 一時テストファイルは `tests/` の中に置くこと。** pytest が `conftest.py` を読み込むのは
+テストファイルの**祖先ディレクトリ**にあるものだけなので、`self.base`（tempdir）に置いた
+ファイルには `tests/conftest.py` が適用されず、実装後も exit 0 のままになる。
 
 ```python
     def test_ci_fails_the_session_when_a_test_is_skipped(self):
         # CI must not go green because a precondition silently vanished.
-        script = self.base / "skippy.py"
-        script.write_text(
+        # The probe file has to live under tests/ so that tests/conftest.py
+        # is on its ancestor path and actually gets loaded.
+        probe = ROOT / "tests" / f"test_skip_probe_{os.getpid()}.py"
+        probe.write_text(
             "import unittest\n"
-            "class T(unittest.TestCase):\n"
-            "    @unittest.skip('deliberate')\n"
+            "class SkipProbeTests(unittest.TestCase):\n"
+            "    @unittest.skip('deliberate probe')\n"
             "    def test_x(self):\n"
             "        pass\n"
         )
+        self.addCleanup(probe.unlink)
+
         env = dict(os.environ)
         env["CI"] = "true"
+        for extra in (["-p", "no:xdist"], ["-n", "2"]):
+            with self.subTest(mode=" ".join(extra)):
+                result = subprocess.run(
+                    [sys.executable, "-m", "pytest", str(probe), "-q", *extra],
+                    cwd=ROOT, env=env, text=True, capture_output=True,
+                )
+                self.assertNotEqual(
+                    result.returncode, 0,
+                    f"a skipped test must fail the session under CI\n{result.stdout}",
+                )
+                self.assertIn("forbids silent skips", result.stdout)
+
+    def test_a_skipped_test_is_tolerated_outside_ci(self):
+        probe = ROOT / "tests" / f"test_skip_probe_local_{os.getpid()}.py"
+        probe.write_text(
+            "import unittest\n"
+            "class SkipProbeLocalTests(unittest.TestCase):\n"
+            "    @unittest.skip('deliberate probe')\n"
+            "    def test_x(self):\n"
+            "        pass\n"
+        )
+        self.addCleanup(probe.unlink)
+
+        env = {k: v for k, v in os.environ.items() if k != "CI"}
         result = subprocess.run(
-            [sys.executable, "-m", "pytest", str(script), "-p", "no:xdist", "-q"],
+            [sys.executable, "-m", "pytest", str(probe), "-q", "-p", "no:xdist"],
             cwd=ROOT, env=env, text=True, capture_output=True,
         )
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertIn("skip", result.stdout.lower())
+        self.assertEqual(result.returncode, 0, result.stdout)
 ```
 
-`import sys` を `tests/test_build.py` の import に足す。
+> `-m 'not live_herdr'` が `addopts` に入るのは Step 5 なので、この探針テストは
+> マーカーの影響を受けない。
 
 - [ ] **Step 2: テストが失敗することを確認**
 
-Run: `python3 -m unittest tests.test_build.BuildTests.test_ci_fails_the_session_when_a_test_is_skipped -v`
-Expected: FAIL。pytest は skip があっても exit 0 を返す。
+Run: `make build && python3 -m pytest tests/test_build.py -k skip -p no:xdist -q`
+Expected: `test_ci_fails_the_session_when_a_test_is_skipped` が FAIL（pytest は skip があっても
+exit 0 を返す）。`test_a_skipped_test_is_tolerated_outside_ci` は PASS。
 
 - [ ] **Step 3: conftest.py を作る**
 
@@ -785,8 +920,8 @@ def pytest_sessionfinish(session, exitstatus):
 
 - [ ] **Step 4: テストが通ることを確認**
 
-Run: `python3 -m unittest tests.test_build.BuildTests.test_ci_fails_the_session_when_a_test_is_skipped -v`
-Expected: PASS。
+Run: `make build && python3 -m pytest tests/test_build.py -k skip -p no:xdist -q`
+Expected: 2 件とも PASS。直列と `-n 2` の双方の subTest が通ること。
 
 - [ ] **Step 5: live マーカーを既定から外す**
 
@@ -938,6 +1073,27 @@ class HslPty:
         self.fd = None
 ```
 
+`__enter__` の**先頭**、`pty.fork()` の前に marker を削除する。
+
+**⚠️ これが無いと 2 セッション目以降でレースが復活する。** 同じ test method 内で複数の
+セッションを起動するテスト（`test_carries_hostile_range_names_verbatim`、
+`RootTableGuardTests`）では、1 つ目のセッションが書いた marker が残っている。削除しないと
+2 つ目の `_wait_ready` が即座に return し、新しい tmux server がまだフラグを反映していない
+時点でクリックを送ってしまう。固定 3 秒を消した意味が無くなる。
+
+```python
+    def __enter__(self):
+        # The marker is per-session state, and several tests start more than
+        # one session in the same test method. A stale marker from the
+        # previous session would make _wait_ready return immediately against
+        # a server that has not read the tracking sequence yet.
+        try:
+            os.unlink(self.ready_path)
+        except FileNotFoundError:
+            pass
+        self.pid, self.fd = pty.fork()
+```
+
 ```python
         fcntl.ioctl(
             self.fd, termios.TIOCSWINSZ,
@@ -1003,20 +1159,99 @@ class HslPty:
 > 通していることがその証拠）。したがって ready marker は通常どおり現れ、
 > `_wait_ready` は待たされない。待機の追加によってこのテストが壊れることはない。
 
+- [ ] **Step 4b: readiness 機構そのものを検査するテストを足す**
+
+`tests/test_tmux_mouse.py` の `StatusClickTests` に追加する。これが無いと AC-D2-1 と
+AC-D2-3 は「実装例はあるが検証がない」状態のままになる。
+
+```python
+    def test_the_ready_marker_records_the_flags_tmux_actually_set(self):
+        # AC-D2-1. The marker means "tmux has read the tracking sequence",
+        # not merely "the inner app wrote it". mode 1003 sets any and all;
+        # sgr is set by the 1006 request in both modes. Measured on 3.7b:
+        # mode 1000 reports 101 and mode 1003 reports 111.
+        self.hook()
+        with self.session():
+            recorded = self.ready_marker.read_text().strip()
+        self.assertEqual(recorded, "111")
+
+    def test_a_stale_marker_does_not_satisfy_a_later_session(self):
+        # Two sessions in one test method is the real pattern; a marker left
+        # by the first must not let the second skip its wait.
+        self.hook()
+        with self.session():
+            pass
+        self.assertTrue(self.ready_marker.exists())
+        stale = self.ready_marker.stat().st_mtime_ns
+        with self.session():
+            fresh = self.ready_marker.stat().st_mtime_ns
+        self.assertNotEqual(stale, fresh, "the marker must be rewritten")
+
+    def test_wait_ready_times_out_with_the_pty_buffer_in_the_message(self):
+        # AC-D2-3. A stub that never reports readiness must fail loudly with
+        # enough context to debug, not hang or pass.
+        self.hook()
+        stub = self.fakebin / "herdr"
+        make_executable(stub, "#!/bin/sh\nprintf 'STUCK\\n'\nsleep 30\n")
+        options = write_protocol(
+            self.base,
+            [("status-interval", "1"), ("status-format-0", STATUS_FORMAT)],
+            mouse_clicks=True,
+        )
+        env = base_env(self.base / "home", self.fakebin)
+        env.update({
+            "HSL_HERDR_BIN": str(stub),
+            "HSL_STATUS_OPTIONS": str(options),
+            "HERDR_PLUGIN_CONFIG_DIR": str(self.config_dir),
+            "HERDR_SESSION": "mouse",
+            "TMPDIR": str(self.base),
+        })
+        if env.get("TERM", "dumb") == "dumb":
+            env["TERM"] = "xterm-256color"
+        with self.assertRaises(AssertionError) as caught:
+            with HslPty(RUNTIME, env, self.ready_marker, cols=80, rows=24) as term:
+                del term
+        message = str(caught.exception)
+        self.assertIn("never became mouse-ready", message)
+        self.assertIn("pty buffer", message)
+```
+
+> このテストは `_wait_ready` の timeout（30s）をそのまま待つため単体で 30 秒かかる。
+> 短縮したい場合は `HslPty.__enter__` の `self._wait_ready(30.0)` の値を
+> コンストラクタ引数に切り出し、このテストからのみ 5.0 を渡すこと。
+
 - [ ] **Step 5: マウステストが通ることを確認**
 
-Run: `python3 -m pytest tests/test_tmux_mouse.py -p no:xdist -q`
-Expected: 12 件 PASS。
+Run: `make build && python3 -m pytest tests/test_tmux_mouse.py -p no:xdist -q`
+Expected: 15 件 PASS（既存 12 + 新規 3）。
 
 - [ ] **Step 6: flake が入っていないことを確認（AC-D2-4）**
 
-Run: `for i in 1 2 3 4 5; do python3 -m pytest tests/test_tmux_mouse.py -p no:xdist -q || echo "RUN $i FAILED"; done`
-Expected: 5 回とも PASS、`RUN n FAILED` が出ない。
+失敗を握りつぶさないこと。`|| echo` は終了コードを 0 にしてしまう。
+
+```bash
+make build || exit 1
+fail=0
+for i in 1 2 3 4 5; do
+    python3 -m pytest tests/test_tmux_mouse.py -p no:xdist -q || fail=1
+done
+[ "$fail" -eq 0 ] || { echo "mouse tests are flaky"; exit 1; }
+echo "5/5 runs passed"
+```
+Expected: `5/5 runs passed` が出て、終了コード 0。
 
 - [ ] **Step 7: 所要時間を再測定する**
 
-Run: `for i in 1 2 3 4 5; do /usr/bin/time -f "%e" make test 2>&1 | tail -1; done`
-Expected: Task 6 Step 9 の値より短い。AC-G-5 の判定はここで行う。
+各実行が成功していることを保証してから時間を測る。失敗した実行の所要時間には意味がない。
+
+```bash
+for i in 1 2 3 4 5; do
+    /usr/bin/time -f "%e" -o /tmp/hsl-par-$i.time make test >/dev/null || exit 1
+done
+cat /tmp/hsl-par-1.time /tmp/hsl-par-2.time /tmp/hsl-par-3.time \
+    /tmp/hsl-par-4.time /tmp/hsl-par-5.time | sort -n | sed -n '3p'
+```
+Expected: Task 6 Step 9 の値より短い中央値が出る。AC-G-5 の判定は完了検証で行う。
 
 - [ ] **Step 8: Commit**
 
@@ -1081,23 +1316,49 @@ git commit -m "test: wait for tmux to report its mouse flags instead of sleeping
         self.assertEqual(result.returncode, 2)
         self.assertIn("usage", result.stderr.lower())
 
-    def test_check_config_with_an_explicit_path_does_not_need_herdr(self):
+    def test_check_config_with_an_explicit_path_never_calls_herdr(self):
+        # Do NOT empty PATH to prove this: root_is_complete() runs `grep`
+        # before the check-config branch is reached, so an empty PATH would
+        # fail a correct implementation for the wrong reason. Replace herdr
+        # with a shim that records being called instead -- it tests the
+        # contract directly.
         config = self.base / "config.toml"
         config.write_text("enabled = true\n")
-        empty = self.base / "empty-bin"
-        empty.mkdir(exist_ok=True)
-        # run_launcher takes environment overrides as keyword arguments.
-        # A PATH with no herdr proves the explicit-path form never calls it.
-        result = self.run_launcher(
-            "--hsl-check-config", str(config), PATH=str(empty)
+        called = self.base / "herdr-was-called"
+        make_executable(
+            self.fakebin / "herdr",
+            f"#!/bin/sh\ntouch {called}\nexit 1\n",
         )
+        result = self.run_launcher("--hsl-check-config", str(config))
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(
+            called.exists(), "the explicit-path form must not invoke herdr"
+        )
+
+    def test_check_config_without_arguments_resolves_the_config_dir(self):
+        # The zero-argument path is the one the skill tells agents to use,
+        # so it needs a positive case of its own.
+        config_dir = self.base / "cfgdir"
+        config_dir.mkdir()
+        (config_dir / "config.toml").write_text("enabled = true\n")
+        make_executable(
+            self.fakebin / "herdr",
+            "#!/bin/sh\n"
+            'if [ "$1" = plugin ] && [ "$2" = config-dir ]; then\n'
+            f"    printf '%s\\n' {config_dir}\n"
+            "    exit 0\n"
+            "fi\n"
+            "exit 1\n",
+        )
+        result = self.run_launcher("--hsl-check-config")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
 ```
 
 - [ ] **Step 2: テストが失敗することを確認**
 
-Run: `python3 -m pytest tests/test_launcher.py -k check_config -q`
-Expected: 5 件とも FAIL。現状は herdr へ pass-through され、herdr が未知オプションとして拒否する。
+Run: `make build && python3 -m pytest tests/test_launcher.py -k check_config -p no:xdist -q`
+Expected: 6 件とも FAIL。現状は herdr へ pass-through され、herdr が未知オプションとして拒否する。
 
 - [ ] **Step 3: launcher-body.sh に分岐を足す**
 
@@ -1157,8 +1418,8 @@ fi
 
 - [ ] **Step 4: テストが通ることを確認**
 
-Run: `python3 -m pytest tests/test_launcher.py -q`
-Expected: 27 件 PASS（既存 22 + 新規 5）。
+Run: `make build && python3 -m pytest tests/test_launcher.py -p no:xdist -q`
+Expected: 28 件 PASS（既存 22 + 新規 6）。
 
 - [ ] **Step 5: SKILL.md の手順を差し替える**
 
@@ -1184,8 +1445,15 @@ Fix every parse or normalization error. Do not claim visual verification unless 
 
 - [ ] **Step 6: SKILL.md に plugin_root の parse が残っていないことを確認（AC-E2-6）**
 
-Run: `grep -n 'plugin_root\|plugin list --plugin' skills/customize-herdr-statusline/SKILL.md; echo "exit=$?"`
-Expected: `exit=1`（一致なし）。
+```bash
+if grep -n 'plugin_root\|plugin list --plugin' \
+        skills/customize-herdr-statusline/SKILL.md; then
+    echo "FAIL: the skill still tells agents to parse plugin_root"
+    exit 1
+fi
+echo "OK: no plugin_root parsing left in the skill"
+```
+Expected: `OK: no plugin_root parsing left in the skill`。
 
 - [ ] **Step 7: shellcheck と構文を確認**
 
@@ -1234,28 +1502,53 @@ git commit -m "feat: add hsl --hsl-check-config and point the skill at it"
 
 - [ ] **Step 2: 層 1 が通ることを確認**
 
-Run: `python3 -m pytest tests/test_hsl_internal.py -q`
-Expected: すべて PASS。
+Run: `make build && python3 -m pytest tests/test_hsl_internal.py -p no:xdist -q`
+Expected: すべて PASS。`--skill` と `--default-config` が pass-through 側に分類される。
 
 - [ ] **Step 3: 層 2 — snapshot fixture を作る**
 
-正規化スクリプトを一時的に走らせて fixture を生成する。root help から発見できる全
-top-level subcommand と、そこに現れない既知の例外 `plugin`（F29）を含めること。
+正規化スクリプトを一時的に走らせて fixture を生成する。対象は root help から発見できる
+全 top-level subcommand（`update` / `server` / `status` を**含む**）と、root help に現れない
+既知の例外 `plugin`（F29）。17 個ある。全て `--help` に exit 0 で応答することは実測済み。
+
+**⚠️ 終了コードを検査すること。** `2>&1` でエラー出力を fixture に書き込む形にすると、
+サブコマンド名を打ち間違えたときにエラーメッセージが正規の fixture として保存され、
+以後その誤りが「正解」になってしまう。
 
 ```bash
+set -eu
 mkdir -p tests/fixtures/herdr-0.8.0
+# Normalisation must match tests/test_herdr_cli_contract.py:normalize exactly:
+# absolute home paths become $HOME, and trailing whitespace is stripped.
 normalize() { sed -e "s#$HOME#\$HOME#g" -e 's/[[:space:]]*$//'; }
-herdr --help 2>&1 | normalize > tests/fixtures/herdr-0.8.0/root.txt
-for sub in api channel config workspace worktree tab notification agent \
-           pane session integration terminal completion plugin; do
-    herdr "$sub" --help 2>&1 | normalize > "tests/fixtures/herdr-0.8.0/$sub.txt"
+
+herdr --help > /tmp/hsl-help.raw
+normalize < /tmp/hsl-help.raw > tests/fixtures/herdr-0.8.0/root.txt
+
+for sub in update server status completion api channel config workspace \
+           worktree tab notification agent pane session integration \
+           terminal plugin; do
+    herdr "$sub" --help > /tmp/hsl-help.raw
+    normalize < /tmp/hsl-help.raw > "tests/fixtures/herdr-0.8.0/$sub.txt"
 done
+rm -f /tmp/hsl-help.raw
+ls tests/fixtures/herdr-0.8.0 | wc -l   # must print 18 (17 + root)
 ```
+
+> `set -eu` があるので、いずれかの `herdr <sub> --help` が非ゼロ終了すればそこで止まる。
+> 折返しの正規化は行わない: 実出力に折返しは含まれず、`normalize()` が行うのは
+> `$HOME` の置換と行末空白の除去だけである。Python 側の `normalize()` も同一に保つ。
 
 - [ ] **Step 4: fixture に絶対パスが残っていないことを確認（AC-E3-2）**
 
-Run: `grep -rn "$HOME" tests/fixtures/herdr-0.8.0/; echo "exit=$?"`
-Expected: `exit=1`（一致なし）。
+```bash
+if grep -rn "$HOME" tests/fixtures/herdr-0.8.0/; then
+    echo "FAIL: an absolute home path survived normalisation"
+    exit 1
+fi
+echo "OK: fixtures carry no absolute paths"
+```
+Expected: `OK: fixtures carry no absolute paths`。
 
 - [ ] **Step 5: 層 2 と層 3 のテストを書く**
 
@@ -1284,6 +1577,15 @@ from tests.helpers import ROOT
 
 FIXTURES = ROOT / "tests/fixtures/herdr-0.8.0"
 ATTACH_SUBCOMMANDS = {"session", "agent", "terminal"}
+# Every top-level subcommand discoverable from the root help, plus `plugin`,
+# which the root help does not list at all even though hsl depends on it.
+# This set is what the fixture must contain -- it is NOT a claim that herdr
+# has no other subcommands.
+EXPECTED_FIXTURES = {
+    "update", "server", "status", "completion", "api", "channel", "config",
+    "workspace", "worktree", "tab", "notification", "agent", "pane",
+    "session", "integration", "terminal", "plugin",
+}
 GLOBAL_OPTIONS = {
     "--no-session", "--session", "--remote", "--remote-keybindings",
     "--handoff", "--default-config", "--skill", "--version", "-V",
@@ -1338,11 +1640,13 @@ class SnapshotTests(unittest.TestCase):
             with self.subTest(subcommand=name):
                 self.assertFalse(has_attach((FIXTURES / f"{name}.txt").read_text()))
 
-    def test_the_fixture_captured_more_than_the_attach_three(self):
-        # Without this the negative test above would pass vacuously.
+    def test_the_fixture_holds_exactly_the_expected_subcommands(self):
+        # Without an exact set the negative test above passes vacuously on a
+        # fixture that captured only the three attach commands. This is an
+        # exact match on "root-discoverable plus the stated known exception",
+        # NOT a claim about the exhaustive set of herdr subcommands.
         captured = {p.stem for p in FIXTURES.glob("*.txt")} - {"root"}
-        self.assertGreater(len(captured - ATTACH_SUBCOMMANDS), 3)
-        self.assertIn("plugin", captured)
+        self.assertEqual(captured, EXPECTED_FIXTURES)
 
 
 @pytest.mark.live_herdr
@@ -1387,28 +1691,51 @@ class LiveComparisonTests(unittest.TestCase):
 
 - [ ] **Step 6: 層 2 が herdr 不在で通ることを確認（AC-E3-1）**
 
-Run: `env PATH=/usr/bin:/bin python3 -m pytest tests/test_herdr_cli_contract.py -q`
+Run: `env PATH=/usr/bin:/bin python3 -m pytest tests/test_herdr_cli_contract.py -p no:xdist -q`
 Expected: `SnapshotTests` の 5 件 PASS。`LiveComparisonTests` は deselect され、skip 0 件。
 
 - [ ] **Step 7: 層 3 が herdr 有りで通ることを確認（AC-E3-5）**
 
-Run: `python3 -m pytest tests/test_herdr_cli_contract.py -m live_herdr -q`
+Run: `python3 -m pytest tests/test_herdr_cli_contract.py -m live_herdr -p no:xdist -q`
 Expected: 2 件 PASS。
 
 - [ ] **Step 8: 差分を注入して層 3 が落ちることを確認（AC-E3-6）**
 
+期待される失敗は `echo exit=$?` で観測しないこと。それでは全体が exit 0 になり、
+「注入しても落ちなかった」場合と区別がつかない。
+
 ```bash
-cp tests/fixtures/herdr-0.8.0/root.txt /tmp/root.bak
+set -eu
+backup=$(mktemp)
+cp tests/fixtures/herdr-0.8.0/root.txt "$backup"
+trap 'cp "$backup" tests/fixtures/herdr-0.8.0/root.txt; rm -f "$backup"' EXIT
+
 printf 'INJECTED DIVERGENCE\n' >> tests/fixtures/herdr-0.8.0/root.txt
-python3 -m pytest tests/test_herdr_cli_contract.py -m live_herdr -q; echo "exit=$?"
-cp /tmp/root.bak tests/fixtures/herdr-0.8.0/root.txt
+if python3 -m pytest tests/test_herdr_cli_contract.py -m live_herdr \
+        -p no:xdist -q; then
+    echo "FAIL: the live comparison passed against a diverged fixture"
+    exit 1
+fi
+echo "OK: divergence was detected"
 ```
-Expected: 注入時に非ゼロ終了。復元後は再び PASS。
+Expected: `OK: divergence was detected` が出て終了コード 0。trap が fixture を復元する。
 
 - [ ] **Step 9: 明示選択かつ herdr 不在で fail することを確認（AC-E3-7）**
 
-Run: `env PATH=/usr/bin:/bin python3 -m pytest tests/test_herdr_cli_contract.py -m live_herdr -q; echo "exit=$?"`
-Expected: 非ゼロ終了。skip ではなく fail。
+```bash
+if env PATH=/usr/bin:/bin python3 -m pytest \
+        tests/test_herdr_cli_contract.py -m live_herdr -p no:xdist -q; then
+    echo "FAIL: the live test passed with no herdr on PATH"
+    exit 1
+fi
+env PATH=/usr/bin:/bin python3 -m pytest tests/test_herdr_cli_contract.py \
+    -m live_herdr -p no:xdist -q 2>&1 | grep -q 'skipped' && {
+    echo "FAIL: it skipped instead of failing"
+    exit 1
+}
+echo "OK: absent herdr fails rather than skips"
+```
+Expected: `OK: absent herdr fails rather than skips`。
 
 - [ ] **Step 10: Commit**
 
@@ -1641,15 +1968,30 @@ Expected: 7 件 PASS（既存 4 + 新規 3）。
 
 - [ ] **Step 6: 各タグが --locked でビルドできることを確認（AC-B3-2）**
 
+失敗を `|| echo` で握りつぶさないこと。それでは全体が exit 0 になり、AC-B3-2 の検証に
+ならない。固定パスの `rm -rf` も使わない。
+
 ```bash
+set -eu
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+fail=0
 for tag in v0.1.0 v0.1.2; do
-    rm -rf /tmp/tagcheck && mkdir -p /tmp/tagcheck
-    git archive "$tag" | tar -x -C /tmp/tagcheck
-    (cd /tmp/tagcheck && CARGO_TARGET_DIR=/tmp/tagcheck/target \
-        cargo build --release --locked) && echo "$tag OK" || echo "$tag FAILED"
+    dir=$work/$tag
+    mkdir -p "$dir"
+    git archive "$tag" | tar -x -C "$dir"
+    if (cd "$dir" && CARGO_TARGET_DIR=$dir/target \
+            cargo build --release --locked >/dev/null 2>&1); then
+        echo "$tag builds"
+    else
+        echo "$tag FAILS --locked"
+        fail=1
+    fi
 done
+[ "$fail" -eq 0 ] || exit 1
+echo "both tags are installable"
 ```
-Expected: 両方 `OK`。
+Expected: `both tags are installable` が出て終了コード 0。
 
 - [ ] **Step 7: CI の checkout に fetch-depth を足す**
 
@@ -1662,12 +2004,22 @@ Expected: 両方 `OK`。
           fetch-depth: 0
 ```
 
-- [ ] **Step 8: タグを push する**
+- [ ] **Step 8: タグの push は実行しない — operator へ引き継ぐ**
 
-⚠️ これは外向きの操作である。実行前に確認を取ること。
+**⚠️ このタスクを実行するエージェントはタグを push してはならない。** push は外向きの
+不可逆操作であり、実行エージェントは確認を取る手段を持たない。タグはローカルに作成した
+状態で止め、以下を報告して終わること。
 
-```bash
-git push origin v0.1.0 v0.1.2
+報告文（そのまま出力してよい）:
+
+```
+Tags v0.1.0 and v0.1.2 are created locally and verified installable.
+They are NOT pushed. To publish them:
+
+    git push origin v0.1.0 v0.1.2
+
+Push the tags before pushing the branch: the CI tag job needs them to
+exist on the remote, and it checks out with fetch-depth: 0 to see them.
 ```
 
 - [ ] **Step 9: Commit**
@@ -1695,22 +2047,67 @@ Expected: すべて exit 0。pytest の出力に `skipped` が 0 件。
 
 - [ ] **AC-G-5: 並列が直列の 75% 以下**
 
+これは仕様の**必須条件**であり、努力目標ではない。未達なら完了検証は**失敗**とし、
+判断を勝手に緩めないこと。実行エージェントは未達の実測値を報告して止まる。
+
 ```bash
-for i in 1 2 3 4 5; do /usr/bin/time -f "par %e" make test 2>&1 | tail -1; done
-for i in 1 2 3 4 5; do /usr/bin/time -f "ser %e" make test-serial 2>&1 | tail -1; done
+set -eu
+measure() {
+    target=$1; label=$2
+    for i in 1 2 3 4 5; do
+        /usr/bin/time -f "%e" -o "/tmp/hsl-$label-$i.time" make "$target" >/dev/null
+    done
+    cat /tmp/hsl-$label-*.time | sort -n | sed -n '3p'
+}
+par=$(measure test par)
+ser=$(measure test-serial ser)
+echo "parallel median ${par}s / serial median ${ser}s"
+python3 -c "
+import sys
+par, ser = float('$par'), float('$ser')
+ratio = par / ser
+print(f'ratio {ratio:.3f} (must be <= 0.75)')
+sys.exit(0 if ratio <= 0.75 else 1)
+"
 ```
-Expected: 並列の中央値 ≤ 直列の中央値 × 0.75。達成できない場合は実測値を記録し、
-仕様 §8-5 の通り閾値ではなく実測値で再判断する（未達それ自体は実装のやり直しを意味しない）。
+Expected: `ratio` が 0.75 以下で終了コード 0。**超過した場合は完了扱いにせず**、
+測定値を添えて報告する。閾値の変更が必要なら、実装計画ではなく受理済みの仕様
+（§7 の AC-G-5）を先に改訂すること。
 
 - [ ] **中核ロジックの振る舞いが変わっていないこと**
 
+`git diff --stat` は差分があっても exit 0 なので、`--exit-code` を使う。
+
 ```bash
-git diff master --stat -- src/ tmux/base.conf
-python3 -m pytest tests/test_hsl_internal.py tests/test_tmux_runtime.py -q
+git diff --exit-code master -- src/ tmux/base.conf \
+    || { echo "core files changed; this plan must not touch them"; exit 1; }
+make build
+python3 -m pytest tests/test_hsl_internal.py tests/test_tmux_runtime.py -p no:xdist -q
+echo "core behaviour unchanged"
 ```
-Expected: `src/` と `tmux/base.conf` に差分なし。両テストとも PASS。
+Expected: `core behaviour unchanged`、終了コード 0。
 
-- [ ] **shellcheck の抑制が SC2329 のみ**
+- [ ] **shellcheck の抑制が SC2329 のみ（AC-C1-2）**
 
-Run: `grep -c 'shellcheck disable' bin/hsl-internal scripts/*.sh scripts/lib/*.sh scripts/run-in-tmux`
-Expected: `run-in-tmux` が 3、他は 0。
+件数だけでなく**種類**を検査する。件数一致でも別のコードを抑制していれば不合格。
+
+```bash
+set -eu
+found=$(grep -ho 'shellcheck disable=[A-Z0-9,]*' \
+    bin/hsl-internal scripts/build.sh scripts/install-launcher.sh \
+    scripts/lib/shell-quote.sh scripts/launcher-body.sh scripts/run-in-tmux \
+    scripts/default-herdr-info.sh | sort -u)
+echo "$found"
+[ "$found" = "shellcheck disable=SC2329" ] \
+    || { echo "unexpected suppression codes"; exit 1; }
+count=$(grep -hc 'shellcheck disable' scripts/run-in-tmux)
+[ "$count" -eq 3 ] || { echo "expected 3 suppressions, found $count"; exit 1; }
+echo "suppressions are SC2329 only, 3 of them"
+```
+Expected: `suppressions are SC2329 only, 3 of them`。
+
+- [ ] **AC 全件の突き合わせ**
+
+仕様 §7 の AC 表を上から順に確認し、それぞれを満たすコマンドと結果を記録する。
+満たせない AC が 1 つでもあれば、その AC ID と実測結果を明示して報告する。
+**黙って完了報告しないこと。**
