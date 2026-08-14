@@ -9,7 +9,7 @@ resolve_self() {
         */*) candidate=$0 ;;
         *) candidate=$(command -v "$0" 2>/dev/null || printf '%s' "$0") ;;
     esac
-    dir=$(CDPATH= cd -P "$(dirname "$candidate")" 2>/dev/null && pwd) || return 1
+    dir=$(CDPATH='' cd -P "$(dirname "$candidate")" 2>/dev/null && pwd) || return 1
     printf '%s/%s\n' "$dir" "$(basename "$candidate")"
 }
 

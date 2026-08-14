@@ -45,3 +45,13 @@ jobs:
           sh -n scripts/launcher-body.sh
           sh -n scripts/run-in-tmux
           sh -n scripts/default-herdr-info.sh
+      - name: Shellcheck
+        run: |
+          shellcheck -s sh \
+            bin/hsl-internal \
+            scripts/build.sh \
+            scripts/install-launcher.sh \
+            scripts/lib/shell-quote.sh \
+            scripts/launcher-body.sh \
+            scripts/run-in-tmux \
+            scripts/default-herdr-info.sh

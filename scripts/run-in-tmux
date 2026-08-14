@@ -7,7 +7,7 @@ HERDR_BIN=${HSL_HERDR_BIN:-herdr}
 SESSION_NAME=hsl
 WINDOW_NAME=herdr
 STDERR_REPLAY_LIMIT=20
-root=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd)
+root=$(CDPATH='' cd -P "$(dirname "$0")/.." && pwd)
 # Overridable for tests only: the root-table guard has to start a server
 # without `unbind-key -a -T root` and show that pass-through breaks.
 BASE_CONF=${HSL_TEST_BASE_CONF:-$root/tmux/base.conf}
@@ -20,6 +20,8 @@ STATUS_OPTIONS=${HSL_STATUS_OPTIONS:-}
 # Set before apply_status_options runs so an absent options file leaves the
 # feature off rather than unset. apply_mouse_clicks reads this.
 MOUSE_CLICKS=false
+# Invoked through `trap` below, which shellcheck cannot follow.
+# shellcheck disable=SC2329
 remove_status_options() {
     [ -n "$STATUS_OPTIONS" ] || return 0
     rm -f "$STATUS_OPTIONS"
@@ -81,6 +83,8 @@ stderr_file=$runtime/stderr
 args_dir=$runtime/args
 mkdir "$args_dir"
 
+# Invoked through `trap` below, which shellcheck cannot follow.
+# shellcheck disable=SC2329
 cleanup() {
     "$TMUX_BIN" -L "$socket" kill-server >/dev/null 2>&1 || true
     rm -rf "$runtime"
@@ -110,6 +114,8 @@ recorded_status() {
     printf '%s\n' "$saved_status"
 }
 
+# Invoked through `trap` below, which shellcheck cannot follow.
+# shellcheck disable=SC2329
 on_signal() {
     fallback=$1
     if final_status=$(recorded_status); then
@@ -127,11 +133,12 @@ trap 'on_signal 129' HUP
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 
-QUOTE_LIB=$(CDPATH= cd -P "$(dirname "$0")" && pwd)/lib/shell-quote.sh
+QUOTE_LIB=$(CDPATH='' cd -P "$(dirname "$0")" && pwd)/lib/shell-quote.sh
 [ -r "$QUOTE_LIB" ] || {
     printf '%s\n' "hsl: missing shell quoting library: $QUOTE_LIB" >&2
     exit 2
 }
+# shellcheck source=scripts/lib/shell-quote.sh
 . "$QUOTE_LIB"
 # A missing or unparsable library aborts before here, but an empty or truncated
 # one is sourced successfully and defines nothing, leaving every quoted value to
