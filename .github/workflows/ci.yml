@@ -70,3 +70,17 @@ jobs:
             scripts/launcher-body.sh \
             scripts/run-in-tmux \
             scripts/default-herdr-info.sh
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned to the rust-version declared in Cargo.toml. If this job fails
+      # after a dependency update, the declared floor is no longer true:
+      # raise it deliberately rather than loosening the pin.
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build and test at the declared MSRV
+        run: |
+          cargo build --release --locked
+          cargo test --locked

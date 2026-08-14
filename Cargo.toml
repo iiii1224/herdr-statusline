@@ -2,6 +2,7 @@
 name = "hsl-config"
 version = "0.1.2"
 edition = "2021"
+rust-version = "1.85"
 description = "Config, init and purge helper for the herdr-statusline plugin"
 license = "MIT"
 
