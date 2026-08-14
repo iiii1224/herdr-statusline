@@ -4,10 +4,20 @@
 - 対象リポジトリ: `herdr-statusline`
 - 検証環境: tmux 3.7b / Linux WSL2 / herdr 0.8.0 / rustc 1.97.1 / shellcheck 0.11.0 /
   Python 3.12 / pytest 9.1.1 / pytest-xdist 3.8.0
-- 改訂: rev2（codex によるレビュー指摘 10 件を検証し、うち **Critical 1 件・High 4 件を
-  含む全件を採用**。あわせて rev1 が未実測の推論を実測事実と並記していた箇所を撤回した）
+- 改訂: rev3（codex レビュー 2 巡目の指摘 6 件を検証し全件採用。1 巡目は 10 件全件採用）
 
-### rev1 からの主な変更
+### rev2 → rev3 の変更
+
+| 指摘 | 変更 |
+| --- | --- |
+| High | `v0.1.0` のタグ位置を `16de6df` → **`0622df4`** に変更。F27 の実測（`0622df4..16de6df` が +3743 行、`16de6df..16bd1b7` が +3 行）により、前者だと機能のほぼ全部が 0.1.0 に属し 0.1.2 が bump だけになる。AC-B3-1 に期待 OID を固定 |
+| High | §5.D-2 の readiness に**さらに深いレースが残っていた**。`flush()` は tmux server が tracking を読んだことを保証しない。marker 作成前に tmux の mouse flag を poll する設計へ変更 |
+| High | §5.E-3 の 3 層について、各層が**何を検出しないか**を明示。層 1 は上流 drift を一切観測しない旨を明記し、rev2 の「主たる防御」という記述を撤回。層 2 にサブコマンド help を追加（root help だけでは `agent attach` を抽出できない）。AC を 3 件から 8 件へ |
+| Medium | 層 1 を「`is_interactive()` の直接実行」から「既存 `test_hsl_internal.py` の argv 行列の拡張」へ変更（F28）。関数の抽出・source を明示的に禁止 |
+| Medium | AC-C1-2 が自己言及で必ず失敗する問題を修正。検査範囲を CI 対象の 7 ファイルに限定 |
+| Low | AC-D1-4 を追加（ローカル統一入口の検査） |
+
+### rev1 → rev2 の変更
 
 | 指摘 | 変更 |
 | --- | --- |
@@ -117,7 +127,9 @@ CI の検出力、テスト実行時間、そして出荷コードが外部プ�
 | F21 | ローカル `master` と `origin/master` は同一コミット `16bd1b7`（0 ahead / 0 behind） | §5.B-3 の遡及タグ付けが安全に行える |
 | F22 | `herdr-plugin.toml` と `Cargo.toml` を変更したコミットは `0622df4`（Initial commit、`0.1.0`）と `eb38ecb`（`0.1.2`）の 2 つのみ。**`0.1.1` はどちらの履歴にも存在しない** | §5.B-3。打つタグは 2 本であって 3 本ではない |
 | F23 | `eb38ecb` の `Cargo.lock` は `hsl-config` を `0.1.0` と記録しており、`cargo build --release --locked` が `error: cannot update the lock file ... because --locked was passed` で**失敗する**。`16bd1b7` では成功する | §5.B-3。`scripts/build.sh` は `--locked` を使うため、`eb38ecb` にタグを打つと**インストール不能な ref** を公開することになる |
-| F24 | `0622df4` と `16de6df`（`eb38ecb` の親、`0.1.0` を宣言する最後のコミット）は、いずれも `cargo build --release --locked` に成功する | §5.B-3。`v0.1.0` は `16de6df` に打てる |
+| F24 | `0622df4` と `16de6df`（`eb38ecb` の親、`0.1.0` を宣言する最後のコミット）は、いずれも `cargo build --release --locked` に成功する | §5.B-3。`v0.1.0` はどちらにも打てる。どちらを選ぶかは F27 が決める |
+| F27 | `git diff --shortstat 0622df4 16de6df` は 19 files / +3743 / -206（mouse support を含む）。`git diff --shortstat 16de6df 16bd1b7` は 3 files / +3 / -3（version と lock のみ） | §5.B-3。`v0.1.0` を `16de6df` に打つと機能のほぼ全部が 0.1.0 に属し、0.1.2 が 3 行の bump だけになる。リリースの記述として成立しないため `0622df4` を採る |
+| F28 | `tests/test_hsl_internal.py` は既に `INTERACTIVE` / `DIRECT` の argv 行列を持ち、`bin/hsl-internal` を**スクリプト全体として実行**して fake runtime と fake herdr のどちらへ到達したかを検査している。現行の行列に `--skill` と `--default-config` は含まれていない | §5.E-3。層 1 は新機構ではなく**既存行列の拡張**である |
 | F25 | rustc 1.85.0 / 1.88.0 / 1.95.0 / 1.96.0 / 1.97.1 のすべてで `cargo build --release --locked` と `cargo test` が成功する。1.85.0 より古い toolchain は当環境に未導入で、**未検証** | §5.B-4。1.85 は「通ることを確認した最古」であって「最小」ではない |
 | F26 | `herdr --help` の出力は `Config: /home/iida/.config/herdr/config.toml` と `Logs: ...` の 2 行に**絶対パスを含む** | §5.E-3。raw 出力の完全一致 fixture は別ユーザー環境で必ず失敗する |
 
@@ -178,16 +190,31 @@ CI の検出力、テスト実行時間、そして出荷コードが外部プ�
 
 `CHANGELOG.md` を Keep a Changelog 形式で追加。`## [Unreleased]` に続き **`0.1.2` と
 `0.1.0` の 2 版**を記載する。F22 の通り `0.1.1` は存在しないため、**書かない**。
-遡及分は各版で利用者から見て何が変わったかの要約に留める。
+
+版と履歴の対応は §5.B-3 のタグ位置と一致させる。
+
+| 版 | 対応する範囲 | 内容 |
+| --- | --- | --- |
+| `0.1.0` | `0622df4` | 初回公開。tmux ラッパー、`config.toml`、launcher、purge |
+| `0.1.2` | `0622df4..16bd1b7` | mouse クリック基盤（`mouse_clicks`、`on-click.sh` 契約）ほか F27 の 3743 行 |
+
+遡及分は網羅的な列挙ではなく、利用者から見て何が変わったかの要約に留める。
 
 #### 5.B-3 タグ
 
-F22・F23・F24 より、打つタグは 2 本。
+F22・F23・F24・F27 より、打つタグは 2 本。
 
 | タグ | コミット | 根拠 |
 | --- | --- | --- |
-| `v0.1.0` | `16de6df` | `0.1.0` を宣言する最後のコミット。`--locked` ビルド成功（F24） |
+| `v0.1.0` | `0622df4` | 歴史的なリリース点。`0.1.0` を宣言して公開された最初の状態。`--locked` ビルド成功（F24） |
 | `v0.1.2` | `16bd1b7` | `--locked` ビルドが成功する最初の `0.1.2` コミット（F23）。master HEAD |
+
+**`v0.1.0` を `16de6df`（`0.1.0` を宣言する最後のコミット）に打ってはならない。** F27 の通り
+`0622df4..16de6df` には mouse support を含む 3743 行の追加があり、`16de6df..16bd1b7` は
+version と lock の 3 行だけである。`16de6df` を選ぶと機能のほぼ全部が `0.1.0` に属し、
+`0.1.2` が 3 行の bump だけになる。これは §5.B-2 の CHANGELOG 再構成と食い違う。
+
+**タグは公開後に動かせない。** 実装前にこの表で確定させ、AC-B3-1 で期待 OID を固定する。
 
 **`v0.1.2` を `eb38ecb`（bump コミット）に打ってはならない。** F23 の通り、そこでは
 `cargo build --release --locked` が失敗し、`scripts/build.sh` がそれを実行するため、
@@ -320,11 +347,20 @@ F12 に対して `HslPty.__enter__` の `_drain(3.0)` を置換する。
 readiness signal にすると、raw mode と tracking がまだ有効でない時点でクリック送出が
 始まりうる。固定 3 秒を消した代償に flake を導入することになる。
 
+**`flush()` の後に marker を置くだけでは足りない。** `sys.stdout.flush()` が保証するのは
+tracking sequence が Python から PTY の kernel buffer へ書かれたことまでで、**tmux server が
+そのバイト列を読んで `mouse_any_flag` / `mouse_all_flag` / `mouse_sgr_flag` を更新したことは
+保証しない**。marker を見た親が直ちにクリックを送ると、tmux が tracking sequence より先に
+client input を処理する余地が残る（codex 指摘 2）。同じ種類のレースが一段深いところに残る。
+
 **採用する設計**:
 
-- `INNER_APP` に**専用の ready marker** を追加する。作成位置は `tty.setraw(0)` と
-  tracking sequence の `flush()` の**後**。marker のパスは既存のログとは別に渡す。
-- `HslPty` は marker の出現を deadline 付きで待つ。
+- `INNER_APP` は tracking sequence を `flush()` した後、**tmux に自身の mouse flag を
+  問い合わせる**（`tmux display-message -p` で `#{mouse_any_flag}#{mouse_all_flag}#{mouse_sgr_flag}`）。
+  要求した mode が server 側に反映されるまで deadline 付きで poll し、**反映を確認してから**
+  ready marker を作成する。marker のパスは既存のログとは別に渡す。
+- `HslPty` は marker の出現を deadline 付きで待つ。marker の存在は「tmux が tracking を
+  認識済み」を意味するため、直後のクリック送出が安全になる。
 - timeout 時は、PTY バッファの内容と子プロセスの状態をエラーメッセージに含めて失敗させる
   （黙って進まない）。deadline は現行の 3.0s より十分大きく取る。3.0s は「十分待つ」ための
   値であって上限ではないため、上限としては短すぎる可能性がある。
@@ -381,25 +417,38 @@ live 比較を既定集合から外せば、上流の drift は永遠に CI を�
 `herdr --help` は絶対パスを含むため、raw 出力の完全一致は別ユーザー環境で必ず失敗する。
 「選んだ help だけから attach は 3 種類だけと証明する」のも循環的である。
 
-**採用する設計 — 3 層**:
+**採用する設計 — 3 層。各層が何を検出し、何を検出しないかを明示する**（codex 指摘 3）。
 
-1. **契約テスト（CI で常時実行、herdr 不要）**: `bin/hsl-internal` の `is_interactive()` を
-   **argv 行列**に対して実行し、各入力の分類結果（wrap するか pass-through するか）を
-   表明する。行列には herdr 0.7.5 と 0.8.0 の双方で意味を持つ形——`--skill`、`--handoff`、
-   `--remote-keybindings` の分離形・結合形、`session|agent|terminal attach`、
-   `--session=` / `--session ` の両形、終端グローバル——を含める。これは help 出力に
-   依存しないため常に走り、skip されない。**これが drift に対する主たる防御である。**
-2. **正規化 snapshot（CI で常時実行、herdr 不要）**: `herdr --help` の出力から絶対パス・
-   末尾空白・折返しを正規化した fixture をコミットし、そこから抽出した
-   「グローバルオプション集合」「`attach` を持つサブコマンド集合」を表明する。
-   **名称は "0.8.0 compatibility snapshot" とし、"drift detection" とは呼ばない。**
-3. **live 比較（opt-in）**: 実 `herdr` の出力を同じ正規化にかけ、snapshot と比較する。
-   既定集合からは **deselect** する。明示選択されたうえで herdr が不在なら **skip せず
-   fail** させる（§5.C-3 の規律）。
+| 層 | 名称 | 検出するもの | **検出しないもの** | 実行 |
+| --- | --- | --- | --- | --- |
+| 1 | ローカル分類器の契約回帰 | 分類器または期待行列が意図せず変わったこと | **上流 herdr の変化は一切観測しない** | CI 常時 |
+| 2 | 0.8.0 compatibility snapshot | コードが記録済み 0.8.0 CLI と整合していること | snapshot 自体が古くなったこと | CI 常時 |
+| 3 | live 比較 | 実 herdr と snapshot の乖離 | — | opt-in のみ |
 
-> 未解決として §8-6 に記す: 上流 drift を CI が自動検知するには、scheduled または release
-> ワークフローで herdr を取得して層 3 を必須実行する必要がある。本仕様では層 1 を主たる
-> 防御と位置づけ、層 3 の自動実行は対象外とする。
+1. **層 1 — ローカル分類器の契約回帰（herdr 不要）**: F28 の通り
+   `tests/test_hsl_internal.py` には既に `INTERACTIVE` / `DIRECT` の argv 行列があり、
+   `bin/hsl-internal` を**スクリプト全体として**実行して到達先を検査している。層 1 は
+   この**既存行列の拡張**であり、新機構ではない。追加するのは現行行列に無い
+   `--skill` と `--default-config`（いずれも `DIRECT` 側）。
+   **`is_interactive()` を抽出・source してはならない。** `bin/hsl-internal` は
+   source 用ライブラリではなく関数定義の後に main path を実行するため、関数だけを
+   取り出す実装は脆く、§4-3 の「本番の配線そのものを起動する」にも反する。
+   この層は **drift に対する防御ではない**（rev2 の記述を訂正）。
+2. **層 2 — 0.8.0 compatibility snapshot（herdr 不要）**: `herdr --help` に加え、
+   `herdr session --help` / `herdr agent --help` / `herdr terminal --help` の出力を
+   fixture としてコミットする。**root help 単体からは `agent attach` と
+   `terminal attach` を抽出できない**ため、サブコマンドの help が必要である。
+   絶対パス（F26）・末尾空白・折返しを正規化したうえで記録し、そこから抽出した
+   **グローバルオプション集合**と **`attach` を持つサブコマンド集合**を厳密一致で表明する。
+   名称は "compatibility snapshot" であり "drift detection" とは呼ばない。
+3. **層 3 — live 比較（opt-in）**: 実 `herdr` の出力を同じ正規化にかけ、snapshot と
+   比較する。既定集合からは **deselect** する（skip ではない）。明示選択されたうえで
+   herdr が不在なら **fail** させる（§5.C-3 の規律）。
+
+> 未解決として §8-6 に記す: **上流 herdr の振る舞い変化を CI は自動検知しない。** 層 1 は
+> ローカル契約の回帰しか見ず、層 2 は snapshot の陳腐化を見ない。自動検知には scheduled
+> または release ワークフローで herdr を取得し層 3 を必須実行する必要があり、本仕様では
+> 対象外とする。この限界を承知のうえで受け入れる。
 
 ---
 
@@ -464,7 +513,7 @@ E-3 (契約テスト) ──▶ C-3 の後（deselect / fail 方針が前提）
 | AC-B1-1 | `LICENSE` が存在し、1 行目に `MIT License`、著作権行を含む |
 | AC-B1-2 | `Cargo.toml` の `license` が `MIT` であり、README のバッジ URL が MIT を指す |
 | AC-B2-1 | `CHANGELOG.md` が存在し、`[Unreleased]` / `0.1.2` / `0.1.0` の 3 見出しを持ち、`0.1.1` を**含まない** |
-| AC-B3-1 | `git tag` が `v0.1.0` と `v0.1.2` の 2 本のみを出力する |
+| AC-B3-1 | `git tag` が `v0.1.0` と `v0.1.2` の 2 本のみを出力し、`git rev-parse v0.1.0^{commit}` が **`0622df4`**、`git rev-parse v0.1.2^{commit}` が **`16bd1b7`** に解決する（期待 OID を固定する。版一致だけでは `16de6df` も通ってしまうため） |
 | AC-B3-2 | 各タグの ref で `herdr-plugin.toml` / `Cargo.toml` / `Cargo.lock` の版が一致し、`cargo build --release --locked` が exit 0 |
 | AC-B3-3 | タグ検証を行う CI ジョブの `actions/checkout` に `fetch-depth: 0` が指定されている |
 | AC-B4-1 | `Cargo.toml` に `rust-version = "1.85"` がある |
@@ -472,7 +521,7 @@ E-3 (契約テスト) ──▶ C-3 の後（deselect / fail 方針が前提）
 | AC-B5-1 | `$bindir` が `PATH` に無い状態で `build.sh` を実行すると stderr に警告が出て、**exit 0** のまま |
 | AC-B5-2 | `$bindir` が `PATH` にある状態では警告が出ない |
 | AC-C1-1 | CI の shellcheck ステップが exit 0 |
-| AC-C1-2 | 抑制指示は SC2329 のみ。`# shellcheck disable=SC1007`／`SC1083`／`SC1090` がリポジトリ内に**存在しない** |
+| AC-C1-2 | **CI が shellcheck にかける 7 つのシェルファイルに限って**、抑制指示が SC2329 のものだけであること。検査範囲をこの 7 ファイルに限定する（「リポジトリ内に存在しない」とすると本仕様書自身がこの AC の説明文に当該文字列を含むため、素直な検索が必ず失敗する） |
 | AC-C1-3 | 書き換え後、`bin/hsl-internal` と `scripts/run-in-tmux` に対する既存 Python テスト（`test_hsl_internal.py` / `test_tmux_runtime.py` の全件）が pass。これをもって振る舞い同一とみなす |
 | AC-C1-4 | shellcheck の対象ファイル集合が `sh -n` ステップの集合と文字列一致 |
 | AC-C2-1 | ワークフローに `permissions: contents: read` がある |
@@ -484,7 +533,8 @@ E-3 (契約テスト) ──▶ C-3 の後（deselect / fail 方針が前提）
 | AC-D1-1 | `helpers.py` に `_HELPER_BUILT` が存在せず、`ensure_helper()` が `cargo` を呼ばない |
 | AC-D1-2 | helper 未ビルドの状態で pytest を実行すると、何を実行すべきかを示すエラーで落ちる |
 | AC-D1-3 | `requirements-dev.txt` と `pyproject.toml` の `[tool.pytest.ini_options]` が存在する |
-| AC-D2-1 | `INNER_APP` の ready marker 作成が `flush()` の**後**にある |
+| AC-D1-4 | ローカル用の統一入口（`make test` 相当）が存在し、release build を実行してから pytest を実行する。README または `CONTRIBUTING` にその入口が記載されている |
+| AC-D2-1 | ready marker の出現時点で、tmux 側の `mouse_any_flag` / `mouse_all_flag` / `mouse_sgr_flag` が要求した mode を反映している。**ソース上の記述順の検査では代用しない**（順序は必要条件だが十分条件ではない） |
 | AC-D2-2 | `HslPty.__enter__` に `_drain(3.0)` 相当の無条件固定待機が無い |
 | AC-D2-3 | marker が現れない状況で `__enter__` が timeout し、PTY バッファ内容を含むエラーで失敗する |
 | AC-D2-4 | `test_tmux_mouse.py` 全 12 件が 5 回連続で pass（flake が入っていないことの確認） |
@@ -495,9 +545,14 @@ E-3 (契約テスト) ──▶ C-3 の後（deselect / fail 方針が前提）
 | AC-E2-4 | 引数 2 個以上で usage を出し exit 2 |
 | AC-E2-5 | config 不在時 exit 2 で、ファイルを作成しない |
 | AC-E2-6 | `SKILL.md` に `plugin_root` を parse させる記述が残っていない |
-| AC-E3-1 | argv 行列の契約テストが herdr 不在環境で pass する（skip しない） |
-| AC-E3-2 | snapshot fixture が正規化済みで、絶対パスを含まない |
-| AC-E3-3 | live 比較テストを明示選択し herdr が不在なら **fail** する（skip しない） |
+| AC-E3-1 | 層 1: 拡張後の `test_hsl_internal.py` の argv 行列に `--skill` と `--default-config` が `DIRECT` として含まれ、herdr 不在環境で pass する（skip しない）。`is_interactive()` を抽出・source する実装が存在しない |
+| AC-E3-2 | 層 2: snapshot fixture が `herdr --help` に加え `session` / `agent` / `terminal` の各 `--help` を含み、正規化済みで絶対パスを含まない |
+| AC-E3-3 | 層 2: fixture から抽出したグローバルオプション集合が期待集合と**厳密一致**する（`--session` `--remote` `--no-session` `--handoff` `--remote-keybindings` `--default-config` `--skill` `--version` `-V` `--help` `-h`） |
+| AC-E3-4 | 層 2: fixture から抽出した `attach` を持つサブコマンド集合が `{session, agent, terminal}` と**厳密一致**する |
+| AC-E3-5 | 層 3: herdr 0.8.0 が存在する環境で live 比較を明示選択すると **pass** する |
+| AC-E3-6 | 層 3: fixture に意図的な差分を注入すると live 比較が **fail** する（red 確認。無条件 fail する偽実装との区別） |
+| AC-E3-7 | 層 3: 明示選択したうえで herdr が不在なら **fail** する（skip しない） |
+| AC-E3-8 | 層 3 が既定実行から **deselect** され、skip として計上されない（AC-G-4 の skip 0 件と両立する） |
 | AC-F-1 | `git check-ignore .claude/worktrees` が一致し、`git check-ignore .claude/settings.json` が一致しない |
 
 ---
@@ -516,8 +571,10 @@ E-3 (契約テスト) ──▶ C-3 の後（deselect / fail 方針が前提）
 5. **AC-G-5 の 75% という閾値は目標値であって実測の裏付けはない。** F11（4 クラス並列で
    77.5s → 47.5s、61%）から外挿した値。5.D-2 適用後の全体値は未測定。実装時に達成できない
    場合は、閾値ではなく実測値を記録して再判断する。
-6. **上流 herdr の drift を CI が自動検知しない。** §5.E-3 の層 3 を必須実行するには
-   scheduled / release ワークフローで herdr を取得する必要があり、本仕様の対象外とした。
-   層 1（argv 行列の契約テスト）が主たる防御であり、これは help 出力に依存しないため
-   herdr の更新そのものでは壊れない。壊れるのは herdr の**振る舞い**が変わったときであり、
-   その検知は層 3 を要する。
+6. **上流 herdr の振る舞い変化を CI は自動検知しない。** §5.E-3 の 3 層のうち、層 1 は
+   ローカル分類器の契約回帰しか観測せず（上流の変化は一切見ない）、層 2 は snapshot 自体の
+   陳腐化を見ない。自動検知には scheduled / release ワークフローで herdr を取得して層 3 を
+   必須実行する必要があり、本仕様の対象外とした。**したがって herdr が新しい `attach` 形式や
+   グローバルオプションを追加しても、誰かが層 3 を手動で実行するまで CI は緑のままである。**
+   この限界を承知のうえで受け入れる。rev2 は層 1 を「drift に対する主たる防御」と書いていたが
+   これは誤りであり、rev3 で撤回した。
