@@ -2,7 +2,15 @@ name: ci
 
 on:
   push:
+    branches: [master]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -12,6 +20,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
       - name: Format
@@ -19,7 +31,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Rust tests
-        run: cargo test
+        run: cargo test --locked
       - name: Build the release helper
         run: cargo build --release --locked
       - name: Python integration tests
