@@ -23,9 +23,11 @@
 - **著作権表記は `Copyright (c) 2026 IIAD Yusuke`。**
 - **`herdr --help` は全 top-level subcommand を列挙しない**（`plugin` が現れない）。help 解析から網羅性を主張しない。
 - **`target/release/hsl-config` は追跡されないビルド成果物である。** Task 6 以降、
-  `ensure_helper()` は自動ビルドしない。したがって **Task 6 より後のタスクで pytest を
-  走らせる検証は必ず `make build &&` を前置すること。** コミットだけを受け取った
-  エージェントの作業ツリーには成果物が存在せず、変更内容と無関係に落ちる。
+  `ensure_helper()` は自動ビルドしない。したがって **helper を使うテストを走らせる検証には
+  `make build &&` を前置すること**（`test_tmux_runtime` / `test_tmux_mouse` /
+  `test_hsl_internal` / `test_launcher` / `test_build`）。helper を使わないテスト
+  （`test_herdr_cli_contract` / `test_consistency`）には不要である。コミットだけを
+  受け取ったエージェントの作業ツリーには成果物が存在しない。
 - **期待される失敗を `; echo "exit=$?"` で観測しないこと。** それでは全体が exit 0 になり、
   「期待どおり失敗した」と「期待に反して成功した」が区別できない。
   `if cmd; then echo FAIL; exit 1; fi` の形を使う。
@@ -1061,13 +1063,17 @@ def inner_app_script(log_path, ready_path, mode=1003):
 
 ```python
 class HslPty:
-    def __init__(self, runtime, env, ready_path, session="mouse", cols=80, rows=24):
+    def __init__(self, runtime, env, ready_path, session="mouse", cols=80,
+                 rows=24, ready_timeout=30.0):
         self.runtime = runtime
         self.env = env
         self.ready_path = ready_path
         self.session = session
         self.cols = cols
         self.rows = rows
+        # Generous for real sessions; the negative test passes a small value
+        # so that exercising the timeout path costs seconds, not half a minute.
+        self.ready_timeout = ready_timeout
         self._buffer = bytearray()
         self.pid = None
         self.fd = None
@@ -1099,7 +1105,13 @@ class HslPty:
             self.fd, termios.TIOCSWINSZ,
             struct.pack("HHHH", self.rows, self.cols, 0, 0),
         )
-        self._wait_ready(30.0)
+        # __exit__ never runs when __enter__ raises, so a failed wait would
+        # otherwise leak the child pid and the pty fd into the rest of the run.
+        try:
+            self._wait_ready(self.ready_timeout)
+        except BaseException:
+            self._reap()
+            raise
         self._buffer.clear()
         return self
 
@@ -1175,24 +1187,19 @@ AC-D2-3 は「実装例はあるが検証がない」状態のままになる。
             recorded = self.ready_marker.read_text().strip()
         self.assertEqual(recorded, "111")
 
-    def test_a_stale_marker_does_not_satisfy_a_later_session(self):
-        # Two sessions in one test method is the real pattern; a marker left
-        # by the first must not let the second skip its wait.
+    def test_a_stale_marker_is_removed_and_a_stuck_session_reports_the_buffer(self):
+        # Covers AC-D2-3 and the stale-marker case in one deterministic test,
+        # with no reliance on timing or filesystem timestamp resolution.
+        #
+        # The stub never writes a marker. A pre-existing marker is therefore
+        # the ONLY thing that could satisfy _wait_ready. An implementation
+        # that forgets to unlink it returns successfully and this test fails;
+        # a correct one unlinks it, waits, and times out with a useful message.
         self.hook()
-        with self.session():
-            pass
-        self.assertTrue(self.ready_marker.exists())
-        stale = self.ready_marker.stat().st_mtime_ns
-        with self.session():
-            fresh = self.ready_marker.stat().st_mtime_ns
-        self.assertNotEqual(stale, fresh, "the marker must be rewritten")
+        self.ready_marker.write_text("STALE\n")
 
-    def test_wait_ready_times_out_with_the_pty_buffer_in_the_message(self):
-        # AC-D2-3. A stub that never reports readiness must fail loudly with
-        # enough context to debug, not hang or pass.
-        self.hook()
         stub = self.fakebin / "herdr"
-        make_executable(stub, "#!/bin/sh\nprintf 'STUCK\\n'\nsleep 30\n")
+        make_executable(stub, "#!/bin/sh\nprintf 'STUCK\\n'\nsleep 5\n")
         options = write_protocol(
             self.base,
             [("status-interval", "1"), ("status-format-0", STATUS_FORMAT)],
@@ -1208,22 +1215,23 @@ AC-D2-3 は「実装例はあるが検証がない」状態のままになる。
         })
         if env.get("TERM", "dumb") == "dumb":
             env["TERM"] = "xterm-256color"
+
         with self.assertRaises(AssertionError) as caught:
-            with HslPty(RUNTIME, env, self.ready_marker, cols=80, rows=24) as term:
-                del term
+            with HslPty(RUNTIME, env, self.ready_marker, ready_timeout=2.0):
+                pass
         message = str(caught.exception)
         self.assertIn("never became mouse-ready", message)
         self.assertIn("pty buffer", message)
 ```
 
-> このテストは `_wait_ready` の timeout（30s）をそのまま待つため単体で 30 秒かかる。
-> 短縮したい場合は `HslPty.__enter__` の `self._wait_ready(30.0)` の値を
-> コンストラクタ引数に切り出し、このテストからのみ 5.0 を渡すこと。
+> `ready_timeout=2.0` を渡すので、この負例は 2 秒強で終わる。既定の 30 秒を待たせると
+> Step 6 の 5 回反復と AC-G-5 の 10 回測定に乗って性能ゲートを不当に悪化させる。
+> 値は固定であり、実行エージェントが調整を判断する余地はない。
 
 - [ ] **Step 5: マウステストが通ることを確認**
 
 Run: `make build && python3 -m pytest tests/test_tmux_mouse.py -p no:xdist -q`
-Expected: 15 件 PASS（既存 12 + 新規 3）。
+Expected: 14 件 PASS（既存 12 + 新規 2）。
 
 - [ ] **Step 6: flake が入っていないことを確認（AC-D2-4）**
 
@@ -2004,29 +2012,35 @@ Expected: `both tags are installable` が出て終了コード 0。
           fetch-depth: 0
 ```
 
-- [ ] **Step 8: タグの push は実行しない — operator へ引き継ぐ**
+- [ ] **Step 8: Commit**
+
+**引き継ぎ報告より先に commit すること。** 逆順にすると、報告して停止した時点で
+実装が未コミットのまま残る。
+
+```bash
+git add tests/test_consistency.py .github/workflows/ci.yml
+git commit -m "test: pin the release tags and their version agreement"
+```
+
+- [ ] **Step 9: タグの push は実行しない — operator へ引き継いでタスク終了**
 
 **⚠️ このタスクを実行するエージェントはタグを push してはならない。** push は外向きの
 不可逆操作であり、実行エージェントは確認を取る手段を持たない。タグはローカルに作成した
-状態で止め、以下を報告して終わること。
+状態で止め、以下を報告してタスクを終えること。
 
 報告文（そのまま出力してよい）:
 
 ```
 Tags v0.1.0 and v0.1.2 are created locally and verified installable.
-They are NOT pushed. To publish them:
+The implementation is committed. The tags are NOT pushed.
+
+To publish them:
 
     git push origin v0.1.0 v0.1.2
 
-Push the tags before pushing the branch: the CI tag job needs them to
-exist on the remote, and it checks out with fetch-depth: 0 to see them.
-```
-
-- [ ] **Step 9: Commit**
-
-```bash
-git add tests/test_consistency.py .github/workflows/ci.yml
-git commit -m "test: pin the release tags and their version agreement"
+Push the tags before pushing the branch. The tag assertions live in the
+`test` job, which checks out with fetch-depth: 0; without the tags on the
+remote that job fails.
 ```
 
 ---
