@@ -138,6 +138,7 @@ CI の検出力、テスト実行時間、そして出荷コードが外部プ�
 | F27 | `git diff --shortstat 0622df4 16de6df` は 19 files / +3743 / -206（mouse support を含む）。`git diff --shortstat 16de6df 16bd1b7` は 3 files / +3 / -3（version と lock のみ） | §5.B-3。`v0.1.0` を `16de6df` に打つと機能のほぼ全部が 0.1.0 に属し、0.1.2 が 3 行の bump だけになる。リリースの記述として成立しないため `0622df4` を採る |
 | F28 | `tests/test_hsl_internal.py` は既に `INTERACTIVE` / `DIRECT` の argv 行列を持ち、`bin/hsl-internal` を**スクリプト全体として実行**して fake runtime と fake herdr のどちらへ到達したかを検査している。現行の行列に `--skill` と `--default-config` は含まれていない | §5.E-3。層 1 は新機構ではなく**既存行列の拡張**である |
 | F29 | `herdr --help` の出力に文字列 `plugin` は **1 度も現れない**が、`herdr plugin --help` は実在し `install` / `list` / `config-dir` 等を持つ。`bin/hsl-internal` はこの `plugin` サブコマンドに依存している | §5.E-3。**root help は全 top-level subcommand を列挙していない。**したがって help 解析から「`attach` を持つのはこの 3 つだけ」を証明することはできない |
+| F30 | trap 経由でのみ呼ばれる関数に対する shellcheck の診断コードは**バージョンで変わる**。ローカルの 0.11.0 は関数定義に **SC2329**（"This function is never invoked"）を出し、GitHub Actions の ubuntu-latest ランナーは関数本体の各文に **SC2317**（"Command appears to be unreachable"）を出す。`# shellcheck disable=SC2329` だけでは後者を抑制できず、CI の Shellcheck ステップが実際に失敗した（run 31868161703） | §5.C-1、AC-C1-2。**コード番号を指定した per-site 抑制はバージョン依存である。**両コードを併記し、CI でバージョンを出力して差分を可視化する |
 | F25 | rustc 1.85.0 / 1.88.0 / 1.95.0 / 1.96.0 / 1.97.1 のすべてで `cargo build --release --locked` と `cargo test` が成功する。1.85.0 より古い toolchain は当環境に未導入で、**未検証** | §5.B-4。1.85 は「通ることを確認した最古」であって「最小」ではない |
 | F26 | `herdr --help` の出力は `Config: /home/iida/.config/herdr/config.toml` と `Logs: ...` の 2 行に**絶対パスを含む** | §5.E-3。raw 出力の完全一致 fixture は別ユーザー環境で必ず失敗する |
 
@@ -271,7 +272,7 @@ version と lock の 3 行だけである。`16de6df` を選ぶと機能のほ�
 | SC1007 | 8 | `CDPATH= cd` → `CDPATH='' cd`（6 件）、`pane= cwd=` / `branch= state=` → 各変数を個別行で初期化（2 件）。**抑制しない** |
 | SC1083 | 1 | `HEAD...@{upstream}` を `"HEAD...@{upstream}"` と quote する。**抑制しない** |
 | SC1090 | 2 | `# shellcheck source=scripts/lib/shell-quote.sh` 指示を置き、解析を通す。**抑制しない** |
-| SC2329 | 3 | trap 経由でのみ呼ばれる関数。回避不能な false positive のため **per-site 抑制**（理由コメント付き） |
+| SC2329 / SC2317 | 3 | trap 経由でのみ呼ばれる関数。回避不能な false positive のため **per-site 抑制**（理由コメント付き）。**両コードを併記する**: F30 の通り、どちらが出るかは shellcheck のバージョンで変わる |
 
 per-site 抑制という方針自体は維持するが、**適用対象は回避不能な false positive に限る**。
 
@@ -544,7 +545,7 @@ E-3 (契約テスト) ──▶ C-3 の後（deselect / fail 方針が前提）
 | AC-B5-1 | `$bindir` が `PATH` に無い状態で `build.sh` を実行すると stderr に警告が出て、**exit 0** のまま |
 | AC-B5-2 | `$bindir` が `PATH` にある状態では警告が出ない |
 | AC-C1-1 | CI の shellcheck ステップが exit 0 |
-| AC-C1-2 | **CI が shellcheck にかける 7 つのシェルファイルに限って**、抑制指示が SC2329 のものだけであること。検査範囲をこの 7 ファイルに限定する（「リポジトリ内に存在しない」とすると本仕様書自身がこの AC の説明文に当該文字列を含むため、素直な検索が必ず失敗する） |
+| AC-C1-2 | **CI が shellcheck にかける 7 つのシェルファイルに限って**、抑制指示が **trap 専用関数の到達不能診断（SC2317 / SC2329）だけ**であること。検査範囲をこの 7 ファイルに限定する（「リポジトリ内に存在しない」とすると本仕様書自身がこの AC の説明文に当該文字列を含むため、素直な検索が必ず失敗する）。**両コードを許すのは F30 による** |
 | AC-C1-3 | 書き換え後、`bin/hsl-internal` と `scripts/run-in-tmux` に対する既存 Python テスト（`test_hsl_internal.py` / `test_tmux_runtime.py` の全件）が pass。これをもって振る舞い同一とみなす |
 | AC-C1-4 | shellcheck の対象ファイル集合が `sh -n` ステップの集合と文字列一致 |
 | AC-C2-1 | ワークフローに `permissions: contents: read` がある |

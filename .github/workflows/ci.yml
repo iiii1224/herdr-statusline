@@ -79,6 +79,10 @@ jobs:
           sh -n scripts/default-herdr-info.sh
       - name: Shellcheck
         run: |
+          # Printed because the codes for a trap-only function differ by
+          # version, and a mismatch between this runner and a contributor's
+          # machine is otherwise invisible in the failure output.
+          shellcheck --version
           shellcheck -s sh \
             bin/hsl-internal \
             scripts/build.sh \
