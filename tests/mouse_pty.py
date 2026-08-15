@@ -25,10 +25,30 @@ import time
 INNER_APP = r"""
 import os, subprocess, sys, time, tty
 log = sys.argv[1]
+ready = sys.argv[2]
+expected = sys.argv[3]
 open(log, "w").close()
 tty.setraw(0)
 sys.stdout.write("\033[?MODEh\033[?1006h")
 sys.stdout.flush()
+
+# flush() only guarantees the bytes reached the pty. It says nothing about
+# whether the tmux server has read them and updated its own mouse flags, so
+# poll until they are actually set before declaring readiness. Without this
+# a click can be delivered while tracking is still off.
+deadline = time.time() + 20
+while time.time() < deadline:
+    out = subprocess.run(
+        ["tmux", "display-message", "-p",
+         "#{mouse_any_flag}#{mouse_all_flag}#{mouse_sgr_flag}"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    if out == expected:
+        with open(ready, "w") as stream:
+            stream.write(out + "\n")
+        break
+    time.sleep(0.05)
+
 end = time.time() + 120
 while time.time() < end:
     try:
@@ -63,27 +83,42 @@ def shell_quote(text):
     return "'" + text.replace("'", "'\\''") + "'"
 
 
-def inner_app_script(log_path, mode=1003):
+def inner_app_script(log_path, ready_path, mode=1003):
     """A shell script running the stub, for HSL_HERDR_BIN."""
     program = INNER_APP.replace("MODE", str(mode))
+    expected = "111" if mode == 1003 else "101"
     return (
         "#!/bin/sh\n"
-        f"exec python3 -c {shell_quote(program)} {shell_quote(str(log_path))}\n"
+        f"exec python3 -c {shell_quote(program)} "
+        f"{shell_quote(str(log_path))} {shell_quote(str(ready_path))} {shell_quote(expected)}\n"
     )
 
 
 class HslPty:
-    def __init__(self, runtime, env, session="mouse", cols=80, rows=24):
+    def __init__(self, runtime, env, ready_path, session="mouse", cols=80,
+                 rows=24, ready_timeout=30.0):
         self.runtime = runtime
         self.env = env
+        self.ready_path = ready_path
         self.session = session
         self.cols = cols
         self.rows = rows
+        # Generous for real sessions; the negative test passes a small value
+        # so that exercising the timeout path costs seconds, not half a minute.
+        self.ready_timeout = ready_timeout
         self._buffer = bytearray()
         self.pid = None
         self.fd = None
 
     def __enter__(self):
+        # The marker is per-session state, and several tests start more than
+        # one session in the same test method. A stale marker from the
+        # previous session would make _wait_ready return immediately against
+        # a server that has not read the tracking sequence yet.
+        try:
+            os.unlink(self.ready_path)
+        except FileNotFoundError:
+            pass
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             for key, value in self.env.items():
@@ -100,9 +135,34 @@ class HslPty:
             self.fd, termios.TIOCSWINSZ,
             struct.pack("HHHH", self.rows, self.cols, 0, 0),
         )
-        self._drain(3.0)
+        # __exit__ never runs when __enter__ raises, so a failed wait would
+        # otherwise leak the child pid and the pty fd into the rest of the run.
+        try:
+            self._wait_ready(self.ready_timeout)
+        except BaseException:
+            self._reap()
+            raise
         self._buffer.clear()
         return self
+
+    def _wait_ready(self, timeout):
+        """Block until the inner app reports tmux has its mouse flags set.
+
+        The marker is written only after the stub has confirmed the flags on
+        the server, so its appearance means a click sent next will actually
+        be tracked. A fixed sleep here would either be slow or racy.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if os.path.exists(self.ready_path):
+                return
+            self._drain(0.2)
+        drawn = bytes(self._buffer)
+        raise AssertionError(
+            f"the tmux session never became mouse-ready within {timeout}s.\n"
+            f"pid={self.pid} fd={self.fd}\n"
+            f"pty buffer ({len(drawn)} bytes): {drawn[-2000:]!r}"
+        )
 
     def __exit__(self, *exc):
         try:

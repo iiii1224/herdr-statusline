@@ -1,8 +1,10 @@
 import os
 import pathlib
 import subprocess
+import sys
 import tempfile
 import unittest
+import unittest.mock
 
 from tests.helpers import ROOT, MANAGED_MARKER, base_env, make_executable
 
@@ -141,6 +143,18 @@ class BuildTests(unittest.TestCase):
         if self.bindir.exists():
             self.assertEqual([p.name for p in self.bindir.iterdir()], [])
 
+    def test_warns_when_the_launcher_directory_is_not_on_path(self):
+        result = self.run_build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(self.bindir), result.stderr)
+        self.assertIn("PATH", result.stderr)
+
+    def test_stays_quiet_when_the_launcher_directory_is_on_path(self):
+        self.env["PATH"] = f"{self.bindir}:{self.env['PATH']}"
+        result = self.run_build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("PATH", result.stderr)
+
     def test_readme_documents_only_the_standard_workflow(self):
         text = (ROOT / "README.md").read_text()
         self.assertIn("herdr plugin install iiii1224/herdr-statusline", text)
@@ -148,3 +162,73 @@ class BuildTests(unittest.TestCase):
         self.assertIn("herdr plugin config-dir herdr-statusline", text)
         self.assertNotIn("./install.sh", text)
         self.assertNotIn(".local/share/herdr-statusline", text)
+
+    def test_ensure_helper_does_not_build(self):
+        # Under `pytest -n auto` every worker is a separate process, and a
+        # session-scoped fixture never runs in the xdist controller at all,
+        # so there is no in-pytest place to build exactly once. The build is
+        # a precondition instead; see the Makefile and the CI build step.
+        from tests import helpers
+
+        self.assertFalse(hasattr(helpers, "_HELPER_BUILT"))
+        with unittest.mock.patch.object(helpers.subprocess, "run") as run:
+            helpers.ensure_helper()
+        run.assert_not_called()
+
+    def test_ensure_helper_says_what_to_run_when_the_binary_is_absent(self):
+        # AC-D1-2. A worker that starts without the artifact must not fail
+        # with a bare FileNotFoundError three frames deep.
+        from tests import helpers
+
+        with unittest.mock.patch.object(helpers.os, "access", return_value=False):
+            with self.assertRaises(RuntimeError) as caught:
+                helpers.ensure_helper()
+        self.assertIn("make test", str(caught.exception))
+
+    def test_ci_fails_the_session_when_a_test_is_skipped(self):
+        # CI must not go green because a precondition silently vanished.
+        probe_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(probe_dir.cleanup)
+        probe = pathlib.Path(probe_dir.name) / f"test_skip_probe_{os.getpid()}.py"
+        probe.write_text(
+            "import unittest\n"
+            "class SkipProbeTests(unittest.TestCase):\n"
+            "    @unittest.skip('deliberate probe')\n"
+            "    def test_x(self):\n"
+            "        pass\n"
+        )
+
+        env = dict(os.environ)
+        env["CI"] = "true"
+        for extra in (["-p", "no:xdist"], ["-n", "2"]):
+            with self.subTest(mode=" ".join(extra)):
+                result = subprocess.run(
+                    [sys.executable, "-m", "pytest", "-p", "tests.conftest", str(probe), "-q", *extra],
+                    cwd=ROOT, env=env, text=True, capture_output=True,
+                )
+                self.assertNotEqual(
+                    result.returncode, 0,
+                    f"a skipped test must fail the session under CI\n{result.stdout}",
+                )
+                self.assertIn("forbids silent skips", result.stdout)
+
+    def test_a_skipped_test_is_tolerated_outside_ci(self):
+        probe_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(probe_dir.cleanup)
+        probe = pathlib.Path(probe_dir.name) / f"test_skip_probe_local_{os.getpid()}.py"
+        probe.write_text(
+            "import unittest\n"
+            "class SkipProbeLocalTests(unittest.TestCase):\n"
+            "    @unittest.skip('deliberate probe')\n"
+            "    def test_x(self):\n"
+            "        pass\n"
+        )
+
+        env = {k: v for k, v in os.environ.items() if k != "CI"}
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-p", "tests.conftest", str(probe), "-q", "-p", "no:xdist"],
+            cwd=ROOT, env=env, text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+

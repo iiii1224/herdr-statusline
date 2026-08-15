@@ -34,22 +34,21 @@ def base_env(home: pathlib.Path, fakebin: pathlib.Path) -> dict:
 
 
 HELPER = ROOT / "target/release/hsl-config"
-_HELPER_BUILT = False
 
 
 def ensure_helper():
-    """Build the release helper once per process and return its path.
+    """Return the release helper's path, failing with what to run if absent.
 
-    Called from write_protocol rather than a setUpClass: unittest orders
-    classes by dir(module), so RealTmuxSmokeTests runs before TmuxRuntimeTests
-    and a per-class build would leave the first class without a binary.
+    Deliberately does not build. Under `pytest -n auto` each worker is its own
+    process, and a session-scoped fixture is never evaluated in the xdist
+    controller, so there is no place inside pytest that runs exactly once.
+    Building is a precondition: `make test` does it, and CI has its own step.
     """
-    global _HELPER_BUILT
-    if not _HELPER_BUILT:
-        subprocess.run(
-            ["cargo", "build", "--release", "--locked"], cwd=ROOT, check=True
+    if not os.access(HELPER, os.X_OK):
+        raise RuntimeError(
+            f"{HELPER} is missing or not executable.\n"
+            "Run `make test`, or build it directly, before running pytest."
         )
-        _HELPER_BUILT = True
     return HELPER
 
 

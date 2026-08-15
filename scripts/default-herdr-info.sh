@@ -3,6 +3,14 @@
 # coloured tmux status-line segments.
 set -u
 
+# `git status` refreshes the index and takes index.lock to write it back.
+# This runs once per status-interval -- every second with the shipped
+# config -- so without this it would contend with the user's own git
+# commands. GIT_OPTIONAL_LOCKS=0 tells git not to take the lock at all;
+# it is not a fallback for when the lock is unavailable. Set once at the
+# top so that any git call added to this template later is covered too.
+export GIT_OPTIONAL_LOCKS=0
+
 PANE_STYLE='#[fg=#ffffff,bg=#5a45a5]'
 CWD_STYLE='#[fg=#ffffff,bg=#2b6cb0]'
 GIT_STYLE='#[fg=#ffffff,bg=#2f855a]'
@@ -15,7 +23,8 @@ field() {
 
 # `herdr pane current` returns the focused pane when no --pane is given, and it
 # resolves the server from $HERDR_SESSION, so no socket path is needed here.
-pane= cwd=
+pane=
+cwd=
 if pane_json=$(herdr pane current 2>/dev/null); then
     pane=$(field pane_id "$pane_json")
     cwd=$(field foreground_cwd "$pane_json")
@@ -32,7 +41,8 @@ case ${HOME:-} in '') ;; *)
     esac ;;
 esac
 
-branch= state=
+branch=
+state=
 if [ -n "$cwd" ] && [ -d "$cwd" ]; then
     branch=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null) ||
         branch=$(git -C "$cwd" rev-parse --short HEAD 2>/dev/null) ||
@@ -40,7 +50,7 @@ if [ -n "$cwd" ] && [ -d "$cwd" ]; then
 fi
 
 if [ -n "$branch" ]; then
-    if counts=$(git -C "$cwd" rev-list --left-right --count HEAD...@{upstream} \
+    if counts=$(git -C "$cwd" rev-list --left-right --count "HEAD...@{upstream}" \
         2>/dev/null)
     then
         ahead=$(printf '%s' "$counts" | cut -f1)

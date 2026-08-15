@@ -1,0 +1,10 @@
+Manage Git worktree-backed workspaces
+
+Usage: herdr worktree [COMMAND]
+
+Commands:
+  list    List worktree workspaces
+  create  Create and open a Git worktree
+  open    Open an existing Git worktree
+  remove  Remove a worktree checkout
+

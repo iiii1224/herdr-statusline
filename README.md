@@ -77,6 +77,37 @@ Herdr status line.
 herdr plugin config-dir herdr-statusline
 ```
 
+## Status Line Buttons
+
+Clicks on the status line can be dispatched to a hook. This is **off by
+default**: turning it on asks the outer terminal for mouse reporting, which
+costs you its native selection and middle-click paste.
+
+It needs tmux 3.4 or newer. Enable it in `config.toml`:
+
+```toml
+mouse_clicks = true
+```
+
+**The hook is not shipped with this plugin.** `hsl` only routes clicks; you or
+another plugin provide `on-click.sh` in the configuration directory, and it
+must be executable. It receives four arguments:
+
+| | |
+|---|---|
+| `$1` | `left`, `right`, `wheelup` or `wheeldown` |
+| `$2` | the range name under the pointer |
+| `$3` | the mouse column, zero-based |
+| `$4` | the status line number, zero-based |
+
+Mark a clickable area in a status format with `#[range=user|NAME]` ...
+`#[norange]`, where `NAME` is at most 15 bytes. tmux dispatches its own
+`window`, `session` and `pane` ranges through the same hook, so treat those
+three names as reserved.
+
+The hook's stdout and exit status are discarded; call `tmux display-message`
+to say anything. See the comments in `config.toml` for the full details.
+
 ## Troubleshooting
 
 ### Unknown `TERM`
@@ -101,3 +132,15 @@ tmux -L <socket> kill-server
 ### Kitty graphics protocol
 
 Kitty graphics protocol output is not supported inside the tmux wrapper.
+
+## Development
+
+```sh
+make test          # Build the release helper, then run the suite in parallel
+make test-serial   # Same suite, one process
+```
+
+The Python suite requires `target/release/hsl-config` to exist before pytest
+starts, which is why `make test` builds first. Install the test dependencies
+with `python3 -m pip install -r requirements-dev.txt`.
+

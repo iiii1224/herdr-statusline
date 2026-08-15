@@ -21,6 +21,11 @@ fi
 exit 1
 """
 
+GIT_ENV_SHIM = """#!/bin/sh
+printf '%s\\n' "${GIT_OPTIONAL_LOCKS:-<unset>}" >> "$HSL_TEST_GIT_ENV_LOG"
+exec REAL_GIT "$@"
+"""
+
 
 def pane_json(pane_id="w2D:p1", cwd=None, foreground_cwd=None):
     """Build one `herdr pane current` reply.
@@ -264,5 +269,36 @@ class HerdrInfoTemplateTests(unittest.TestCase):
             segments(out), [(PANE_STYLE, "w2D:p1"), (CWD_STYLE, str(repo))]
         )
 
+    def test_every_git_call_disables_optional_locks(self):
+        # `git status` takes index.lock by default, and this template is
+        # advertised for status_interval = 1, so it would contend with the
+        # user's own git commands once a second.
+        repo = self.make_repo()
+
+        # The shim goes in only AFTER make_repo: self.git() resolves `git`
+        # through the same PATH, so installing it earlier would log the
+        # fixture's own calls.
+        log = self.base / "git-env.log"
+        real_git = shutil.which("git")
+        self.assertIsNotNone(real_git, "these tests need a real git")
+        make_executable(
+            self.fakebin / "git", GIT_ENV_SHIM.replace("REAL_GIT", real_git)
+        )
+
+        self.run_template(
+            pane_json(foreground_cwd=str(repo)),
+            HSL_TEST_GIT_ENV_LOG=str(log),
+            # Force the ambient value to 1 so this test is red without the
+            # export, even on a machine that already exports 0.
+            GIT_OPTIONAL_LOCKS="1",
+        )
+
+        recorded = log.read_text().split()
+        self.assertTrue(recorded, "the template must invoke git at least once")
+        self.assertEqual(
+            set(recorded), {"0"}, f"every git call must see 0, got {recorded}"
+        )
+
     def test_is_a_valid_posix_script(self):
         self.assertEqual(subprocess.run(["sh", "-n", str(TEMPLATE)]).returncode, 0)
+

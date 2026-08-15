@@ -1,0 +1,9 @@
+Manage built-in agent integrations
+
+Usage: herdr integration [COMMAND]
+
+Commands:
+  install    Install an integration
+  uninstall  Uninstall an integration
+  status     Show integration status
+

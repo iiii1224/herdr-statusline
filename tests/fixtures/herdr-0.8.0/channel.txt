@@ -1,0 +1,8 @@
+Manage stable and preview update channels
+
+Usage: herdr channel [COMMAND]
+
+Commands:
+  show  Print the configured update channel
+  set   Choose the update channel
+

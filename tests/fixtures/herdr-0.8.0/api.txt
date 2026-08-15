@@ -1,0 +1,8 @@
+Inspect socket API metadata and live runtime state
+
+Usage: herdr api [COMMAND]
+
+Commands:
+  snapshot  Print the live session snapshot
+  schema    Print or write the bundled API schema
+

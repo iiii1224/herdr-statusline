@@ -90,16 +90,14 @@ Three constraints shape the layout:
 
 Run `sh -n` on every shell helper you changed.
 
-Validate `config.toml` with the plugin's own parser. Resolve `plugin_root` from the matching entry in:
+Validate `config.toml` with the plugin's own parser:
 
 ```sh
-herdr plugin list --plugin herdr-statusline --json
+hsl --hsl-check-config
 ```
 
-Then run:
-
-```sh
-"$plugin_root/target/release/hsl-config" load "$config_dir/config.toml" >/dev/null
-```
+It exits 0 when the configuration is valid and 2 with an explanation otherwise.
+Pass a path to check a file other than the installed one.
 
 Fix every parse or normalization error. Do not claim visual verification unless a fresh `hsl` session was actually inspected. Tell the user to exit and restart `hsl` to load the new configuration, and summarize the changed segments and files.
+

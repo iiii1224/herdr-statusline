@@ -1,0 +1,17 @@
+Install and run workflow plugins
+
+Usage: herdr plugin [COMMAND]
+
+Commands:
+  install     Install a plugin from GitHub
+  uninstall   Uninstall a plugin
+  link        Link a local plugin
+  unlink      Unlink a local plugin
+  enable      Enable a plugin
+  disable     Disable a plugin
+  list        List installed plugins
+  config-dir  Print a plugin config directory
+  action      List or invoke plugin actions
+  log         Inspect plugin command logs [aliases: logs]
+  pane        Manage plugin-owned panes
+

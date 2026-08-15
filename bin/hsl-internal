@@ -7,7 +7,7 @@ HERDR_BIN=${HSL_HERDR_BIN:-herdr}
 # herdr resolves its session name from --session, then HERDR_SESSION, then this
 # literal. Mirror it so the status line names the session herdr attached to.
 DEFAULT_SESSION=default
-root=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd)
+root=$(CDPATH='' cd -P "$(dirname "$0")/.." && pwd)
 HELPER=$root/target/release/hsl-config
 RUN_TMUX=$root/scripts/run-in-tmux
 

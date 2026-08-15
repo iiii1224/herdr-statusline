@@ -43,6 +43,7 @@ class MouseIntegrationBase(unittest.TestCase):
         self.fakebin = self.base / "bin"
         self.fakebin.mkdir()
         self.app_log = self.base / "app.log"
+        self.ready_marker = self.base / "ready.marker"
         self.hook_log = self.base / "hook.log"
         # A config directory whose name carries a space, a '#' and a quote:
         # all three are hazards for the two-stage expansion run-shell does.
@@ -60,7 +61,9 @@ class MouseIntegrationBase(unittest.TestCase):
     def runtime_env(self, status_format=STATUS_FORMAT, mouse=True, mode=1003,
                     extra_options=()):
         stub = self.fakebin / "herdr"
-        make_executable(stub, inner_app_script(self.app_log, mode=mode))
+        make_executable(
+            stub, inner_app_script(self.app_log, self.ready_marker, mode=mode)
+        )
         options = write_protocol(
             self.base,
             [("status-interval", "1"), ("status-format-0", status_format),
@@ -80,7 +83,7 @@ class MouseIntegrationBase(unittest.TestCase):
         return env
 
     def session(self, **kw):
-        return HslPty(RUNTIME, self.runtime_env(**kw))
+        return HslPty(RUNTIME, self.runtime_env(**kw), self.ready_marker)
 
     def received(self):
         if not self.app_log.exists():
@@ -232,6 +235,65 @@ class StatusClickTests(MouseIntegrationBase):
         self.assertEqual(len(lines), 6)
         self.assertEqual(set(lines), {"left|btn|2|0"})
 
+    def test_the_ready_marker_records_the_flags_tmux_actually_set_1003(self):
+        # AC-D2-1. The marker means "tmux has read the tracking sequence",
+        # not merely "the inner app wrote it". mode 1003 sets any and all;
+        # sgr is set by the 1006 request in both modes. Measured on 3.7b:
+        # mode 1000 reports 101 and mode 1003 reports 111.
+        self.hook()
+        with self.session(mode=1003):
+            recorded = self.ready_marker.read_text().strip()
+        self.assertEqual(recorded, "111")
+
+    def test_the_ready_marker_records_the_flags_tmux_actually_set_1000(self):
+        self.hook()
+        with self.session(mode=1000):
+            recorded = self.ready_marker.read_text().strip()
+        self.assertEqual(recorded, "101")
+
+    def test_a_stale_marker_is_removed_and_a_stuck_session_reports_the_buffer(self):
+        # Covers AC-D2-3 and the stale-marker case in one deterministic test,
+        # with no reliance on timing or filesystem timestamp resolution.
+        #
+        # The stub never writes a marker. A pre-existing marker is therefore
+        # the ONLY thing that could satisfy _wait_ready. An implementation
+        # that forgets to unlink it returns successfully and this test fails;
+        # a correct one unlinks it, waits, and times out with a useful message.
+        self.hook()
+        self.ready_marker.write_text("STALE\n")
+
+        stub = self.fakebin / "herdr"
+        # STUCK is printed into the pane so the assertion below can prove the
+        # error message carries the real buffer, not just a label. The sleep
+        # must outlive ready_timeout so the session is still up when it fires.
+        make_executable(stub, "#!/bin/sh\nprintf 'STUCK\\n'\nsleep 15\n")
+        options = write_protocol(
+            self.base,
+            [("status-interval", "1"), ("status-format-0", STATUS_FORMAT)],
+            mouse_clicks=True,
+        )
+        env = base_env(self.base / "home", self.fakebin)
+        env.update({
+            "HSL_HERDR_BIN": str(stub),
+            "HSL_STATUS_OPTIONS": str(options),
+            "HERDR_PLUGIN_CONFIG_DIR": str(self.config_dir),
+            "HERDR_SESSION": "mouse",
+            "TMPDIR": str(self.base),
+        })
+        if env.get("TERM", "dumb") == "dumb":
+            env["TERM"] = "xterm-256color"
+
+        with self.assertRaises(AssertionError) as caught:
+            with HslPty(RUNTIME, env, self.ready_marker, ready_timeout=5.0):
+                pass
+        message = str(caught.exception)
+        self.assertIn("never became mouse-ready", message)
+        # Not just the "pty buffer" label: assert the buffer's actual content
+        # reached the message. A fixed string carrying the label but omitting
+        # the bytes would satisfy a label-only check and tell a debugger
+        # nothing. AC-D2-3.
+        self.assertIn("STUCK", message)
+
 
 @unittest.skipUnless(TMUX, "tmux is not installed")
 @unittest.skipUnless(tmux_at_least_3_4(), "needs tmux 3.4 or newer")
@@ -321,7 +383,7 @@ class RootTableGuardTests(MouseIntegrationBase):
         env["HSL_TEST_BASE_CONF"] = str(patched)
         event = r"\x1b[<10;10;5M"
         control = r"\x1b[<0;10;5M"
-        with HslPty(RUNTIME, env) as term:
+        with HslPty(RUNTIME, env, self.ready_marker) as term:
             # Positive control first, in this same session. Without it a
             # session that never started — a bad HSL_TEST_BASE_CONF, a slow
             # boot — is indistinguishable from tmux swallowing the event, and

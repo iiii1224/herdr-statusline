@@ -1,0 +1,11 @@
+Show local client and running server status
+
+Usage: herdr status [OPTIONS] [COMMAND]
+
+Commands:
+  server  Show running server status
+  client  Show local client status
+
+Options:
+      --json
+

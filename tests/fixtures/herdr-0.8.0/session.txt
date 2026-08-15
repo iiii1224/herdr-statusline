@@ -1,0 +1,10 @@
+Manage named persistent sessions
+
+Usage: herdr session [COMMAND]
+
+Commands:
+  list    List sessions
+  attach  Attach to a session
+  stop    Stop a session
+  delete  Delete a stopped session
+

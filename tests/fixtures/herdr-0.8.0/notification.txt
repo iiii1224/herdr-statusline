@@ -1,0 +1,7 @@
+Show Herdr notifications
+
+Usage: herdr notification [COMMAND]
+
+Commands:
+  show  Show a notification
+

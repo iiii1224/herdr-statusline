@@ -2,7 +2,7 @@
 # Build hsl-config and install the managed ~/.local/bin/hsl launcher.
 set -eu
 
-root=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd)
+root=$(CDPATH='' cd -P "$(dirname "$0")/.." && pwd)
 : "${HOME:?build.sh: HOME is not set}"
 cargo_bin=${HSL_TEST_CARGO_BIN:-cargo}
 bindir=${HSL_TEST_BIN_DIR:-$HOME/.local/bin}
@@ -50,3 +50,14 @@ if [ "${HSL_TEST_SKIP_BINARY_CHECK:-0}" != 1 ] && [ ! -x "$root/target/release/h
 fi
 
 sh "$install_launcher" "$root" "$launcher"
+
+# The launcher is installed, so the build succeeded; PATH is the user's shell
+# configuration and not something to fail an install over. Colons on both
+# sides so a directory cannot match a longer neighbour by prefix.
+case ":$PATH:" in
+    *":$bindir:"*) ;;
+    *)
+        printf 'build.sh: %s is not on PATH; '\''hsl'\'' will not be found\n' "$bindir" >&2
+        printf '%s\n' 'build.sh: add it to PATH in your shell configuration' >&2
+        ;;
+esac

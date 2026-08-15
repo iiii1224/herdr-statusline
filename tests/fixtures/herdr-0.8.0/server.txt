@@ -1,0 +1,11 @@
+Run or control the headless server
+
+Usage: herdr server [COMMAND]
+
+Commands:
+  stop                    Stop the running server
+  reload-config           Reload config in the running server
+  agent-manifests         Show active agent detection manifests
+  update-agent-manifests  Fetch and reload agent detection manifests
+  reload-agent-manifests  Reload local agent detection manifest overrides
+

@@ -48,11 +48,12 @@ body=$root/scripts/launcher-body.sh
     exit 1
 }
 
-quote_lib=$(CDPATH= cd -P "$(dirname "$0")" && pwd)/lib/shell-quote.sh
+quote_lib=$(CDPATH='' cd -P "$(dirname "$0")" && pwd)/lib/shell-quote.sh
 [ -r "$quote_lib" ] || {
     printf '%s\n' "install-launcher.sh: missing required file: $quote_lib" >&2
     exit 1
 }
+# shellcheck source=scripts/lib/shell-quote.sh
 . "$quote_lib"
 # A missing or unparsable library aborts before here, but an empty or truncated
 # one is sourced successfully and defines nothing. That would bake MARKER= and
