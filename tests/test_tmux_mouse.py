@@ -235,15 +235,21 @@ class StatusClickTests(MouseIntegrationBase):
         self.assertEqual(len(lines), 6)
         self.assertEqual(set(lines), {"left|btn|2|0"})
 
-    def test_the_ready_marker_records_the_flags_tmux_actually_set(self):
+    def test_the_ready_marker_records_the_flags_tmux_actually_set_1003(self):
         # AC-D2-1. The marker means "tmux has read the tracking sequence",
         # not merely "the inner app wrote it". mode 1003 sets any and all;
         # sgr is set by the 1006 request in both modes. Measured on 3.7b:
         # mode 1000 reports 101 and mode 1003 reports 111.
         self.hook()
-        with self.session():
+        with self.session(mode=1003):
             recorded = self.ready_marker.read_text().strip()
         self.assertEqual(recorded, "111")
+
+    def test_the_ready_marker_records_the_flags_tmux_actually_set_1000(self):
+        self.hook()
+        with self.session(mode=1000):
+            recorded = self.ready_marker.read_text().strip()
+        self.assertEqual(recorded, "101")
 
     def test_a_stale_marker_is_removed_and_a_stuck_session_reports_the_buffer(self):
         # Covers AC-D2-3 and the stale-marker case in one deterministic test,

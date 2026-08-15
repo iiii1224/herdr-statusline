@@ -6,7 +6,8 @@ build:
 	cargo build --release --locked
 
 test: build
-	python3 -m pytest -n auto --dist loadscope
+	python3 -m pytest tests/test_tmux_mouse.py -p no:xdist
+	python3 -m pytest --ignore=tests/test_tmux_mouse.py -n auto --dist loadscope
 
 test-serial: build
 	python3 -m pytest -p no:xdist

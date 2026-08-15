@@ -1,4 +1,4 @@
 /target
-/.claude/worktrees/
+/.claude/worktrees
 __pycache__/
 *.pyc

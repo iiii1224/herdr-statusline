@@ -26,6 +26,7 @@ INNER_APP = r"""
 import os, subprocess, sys, time, tty
 log = sys.argv[1]
 ready = sys.argv[2]
+expected = sys.argv[3]
 open(log, "w").close()
 tty.setraw(0)
 sys.stdout.write("\033[?MODEh\033[?1006h")
@@ -42,7 +43,7 @@ while time.time() < deadline:
          "#{mouse_any_flag}#{mouse_all_flag}#{mouse_sgr_flag}"],
         capture_output=True, text=True,
     ).stdout.strip()
-    if out and out.endswith("1") and "1" in out[:-1]:
+    if out == expected:
         with open(ready, "w") as stream:
             stream.write(out + "\n")
         break
@@ -85,10 +86,11 @@ def shell_quote(text):
 def inner_app_script(log_path, ready_path, mode=1003):
     """A shell script running the stub, for HSL_HERDR_BIN."""
     program = INNER_APP.replace("MODE", str(mode))
+    expected = "111" if mode == 1003 else "101"
     return (
         "#!/bin/sh\n"
         f"exec python3 -c {shell_quote(program)} "
-        f"{shell_quote(str(log_path))} {shell_quote(str(ready_path))}\n"
+        f"{shell_quote(str(log_path))} {shell_quote(str(ready_path))} {shell_quote(expected)}\n"
     )
 
 

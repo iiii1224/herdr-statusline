@@ -49,10 +49,20 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Rust tests
         run: cargo test --locked
+      - name: Assert historical tags build
+        run: |
+          for tag in v0.1.0 v0.1.2; do
+            tmp=$(mktemp -d)
+            git archive $tag | tar -xC "$tmp"
+            (cd "$tmp" && cargo build --release --locked)
+            rm -rf "$tmp"
+          done
       - name: Build the release helper
         run: cargo build --release --locked
       - name: Python integration tests
-        run: python3 -m pytest -n auto --dist loadscope
+        run: |
+          python3 -m pytest tests/test_tmux_mouse.py -p no:xdist
+          python3 -m pytest --ignore=tests/test_tmux_mouse.py -n auto --dist loadscope
       - name: Shell syntax
         run: |
           sh -n bin/hsl-internal

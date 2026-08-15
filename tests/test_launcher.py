@@ -306,6 +306,17 @@ class LauncherTests(unittest.TestCase):
             called.exists(), "the explicit-path form must not invoke herdr"
         )
 
+    def test_check_config_with_empty_string_path_fails_without_calling_herdr(self):
+        called = self.base / "herdr-was-called"
+        make_executable(
+            self.fakebin / "herdr",
+            f"#!/bin/sh\ntouch {called}\nexit 1\n",
+        )
+        result = self.run_launcher("--hsl-check-config", "")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no such configuration file", result.stderr)
+        self.assertFalse(called.exists())
+
     def test_check_config_without_arguments_resolves_the_config_dir(self):
         # The zero-argument path is the one the skill tells agents to use,
         # so it needs a positive case of its own.

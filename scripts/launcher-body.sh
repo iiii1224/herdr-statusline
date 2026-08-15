@@ -80,9 +80,11 @@ if [ "${1:-}" = uninstall ]; then
     fi
 elif [ "${1:-}" = --hsl-check-config ]; then
     mode=check-config
+    check_config_explicit=false
     if [ "$#" -eq 1 ]; then
         check_config_path=
     elif [ "$#" -eq 2 ]; then
+        check_config_explicit=true
         check_config_path=$2
     else
         printf '%s\n' 'usage: hsl --hsl-check-config [<config.toml>]' >&2
@@ -116,7 +118,7 @@ HELPER=$PLUGIN_ROOT/target/release/hsl-config
 INTERNAL=$PLUGIN_ROOT/bin/hsl-internal
 
 if [ "$mode" = check-config ]; then
-    if [ -z "$check_config_path" ]; then
+    if [ "$check_config_explicit" = false ]; then
         require_herdr
         config_dir=$("$HERDR_BIN" plugin config-dir "$PLUGIN_ID") || {
             printf '%s\n' 'hsl: failed to resolve the plugin config directory' >&2

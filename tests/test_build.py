@@ -187,9 +187,9 @@ class BuildTests(unittest.TestCase):
 
     def test_ci_fails_the_session_when_a_test_is_skipped(self):
         # CI must not go green because a precondition silently vanished.
-        # The probe file has to live under tests/ so that tests/conftest.py
-        # is on its ancestor path and actually gets loaded.
-        probe = ROOT / "tests" / f"test_skip_probe_{os.getpid()}.py"
+        probe_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(probe_dir.cleanup)
+        probe = pathlib.Path(probe_dir.name) / f"test_skip_probe_{os.getpid()}.py"
         probe.write_text(
             "import unittest\n"
             "class SkipProbeTests(unittest.TestCase):\n"
@@ -197,14 +197,13 @@ class BuildTests(unittest.TestCase):
             "    def test_x(self):\n"
             "        pass\n"
         )
-        self.addCleanup(probe.unlink)
 
         env = dict(os.environ)
         env["CI"] = "true"
         for extra in (["-p", "no:xdist"], ["-n", "2"]):
             with self.subTest(mode=" ".join(extra)):
                 result = subprocess.run(
-                    [sys.executable, "-m", "pytest", str(probe), "-q", *extra],
+                    [sys.executable, "-m", "pytest", "-p", "tests.conftest", str(probe), "-q", *extra],
                     cwd=ROOT, env=env, text=True, capture_output=True,
                 )
                 self.assertNotEqual(
@@ -214,7 +213,9 @@ class BuildTests(unittest.TestCase):
                 self.assertIn("forbids silent skips", result.stdout)
 
     def test_a_skipped_test_is_tolerated_outside_ci(self):
-        probe = ROOT / "tests" / f"test_skip_probe_local_{os.getpid()}.py"
+        probe_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(probe_dir.cleanup)
+        probe = pathlib.Path(probe_dir.name) / f"test_skip_probe_local_{os.getpid()}.py"
         probe.write_text(
             "import unittest\n"
             "class SkipProbeLocalTests(unittest.TestCase):\n"
@@ -222,11 +223,10 @@ class BuildTests(unittest.TestCase):
             "    def test_x(self):\n"
             "        pass\n"
         )
-        self.addCleanup(probe.unlink)
 
         env = {k: v for k, v in os.environ.items() if k != "CI"}
         result = subprocess.run(
-            [sys.executable, "-m", "pytest", str(probe), "-q", "-p", "no:xdist"],
+            [sys.executable, "-m", "pytest", "-p", "tests.conftest", str(probe), "-q", "-p", "no:xdist"],
             cwd=ROOT, env=env, text=True, capture_output=True,
         )
         self.assertEqual(result.returncode, 0, result.stdout)
